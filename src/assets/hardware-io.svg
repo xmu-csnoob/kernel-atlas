@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" width="900" height="500" font-family="sans-serif">
+  <title>Hardware I/O: Disk Read Path</title>
+
+  <!-- Background -->
+  <rect width="900" height="500" fill="#f9f9f9" rx="8"/>
+
+  <!-- Diagram Title -->
+  <text x="450" y="36" text-anchor="middle" font-size="20" font-weight="bold" fill="#222">Hardware I/O: Disk Read Path</text>
+
+  <!-- ===================== DISK CONTROLLER ===================== -->
+  <g id="disk-controller">
+    <!-- Outer platter circle -->
+    <circle cx="110" cy="240" r="60" fill="#e8f0fb" stroke="#555" stroke-width="2"/>
+    <!-- Middle platter ring -->
+    <circle cx="110" cy="240" r="40" fill="none" stroke="#555" stroke-width="1.5"/>
+    <!-- Inner platter ring -->
+    <circle cx="110" cy="240" r="20" fill="none" stroke="#555" stroke-width="1.5"/>
+    <!-- Center spindle -->
+    <circle cx="110" cy="240" r="5" fill="#555"/>
+    <!-- Read head arm -->
+    <line x1="110" y1="240" x2="158" y2="196" stroke="#333" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Read head tip -->
+    <circle cx="158" cy="196" r="5" fill="#4A90D9" stroke="#333" stroke-width="1.5"/>
+
+    <!-- Component border box -->
+    <rect x="40" y="155" width="140" height="175" rx="6" fill="none" stroke="#555" stroke-width="2" stroke-dasharray="6,3"/>
+
+    <!-- Labels -->
+    <text x="110" y="348" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">Disk Controller</text>
+    <text x="110" y="366" text-anchor="middle" font-size="11" fill="#666">receives I/O command</text>
+  </g>
+
+  <!-- ===================== DMA BUS ARROW ===================== -->
+  <g id="dma-bus">
+    <!-- Main bus line -->
+    <line x1="190" y1="240" x2="490" y2="240" stroke="#4A90D9" stroke-width="3"/>
+    <!-- Arrowhead -->
+    <polygon points="490,233 506,240 490,247" fill="#4A90D9"/>
+
+    <!-- Data packet 1 -->
+    <rect x="220" y="228" width="28" height="24" rx="3" fill="#4A90D9" opacity="0.75"/>
+    <text x="234" y="244" text-anchor="middle" font-size="9" fill="white" font-weight="bold">0x1</text>
+
+    <!-- Data packet 2 -->
+    <rect x="270" y="228" width="28" height="24" rx="3" fill="#4A90D9" opacity="0.75"/>
+    <text x="284" y="244" text-anchor="middle" font-size="9" fill="white" font-weight="bold">0x2</text>
+
+    <!-- Data packet 3 -->
+    <rect x="320" y="228" width="28" height="24" rx="3" fill="#4A90D9" opacity="0.75"/>
+    <text x="334" y="244" text-anchor="middle" font-size="9" fill="white" font-weight="bold">0x3</text>
+
+    <!-- Data packet 4 -->
+    <rect x="370" y="228" width="28" height="24" rx="3" fill="#4A90D9" opacity="0.75"/>
+    <text x="384" y="244" text-anchor="middle" font-size="9" fill="white" font-weight="bold">0x4</text>
+
+    <!-- DMA label -->
+    <text x="348" y="218" text-anchor="middle" font-size="14" font-weight="bold" fill="#2c6fad">DMA Transfer</text>
+    <text x="348" y="280" text-anchor="middle" font-size="11" fill="#666">data copied to RAM without CPU</text>
+  </g>
+
+  <!-- ===================== SYSTEM MEMORY ===================== -->
+  <g id="system-memory">
+    <rect x="510" y="175" width="160" height="130" rx="8" fill="#e6f4ea" stroke="#555" stroke-width="2"/>
+
+    <!-- Memory row lines -->
+    <line x1="525" y1="210" x2="655" y2="210" stroke="#aaa" stroke-width="1"/>
+    <line x1="525" y1="232" x2="655" y2="232" stroke="#aaa" stroke-width="1"/>
+    <line x1="525" y1="254" x2="655" y2="254" stroke="#aaa" stroke-width="1"/>
+    <line x1="525" y1="276" x2="655" y2="276" stroke="#aaa" stroke-width="1"/>
+
+    <!-- Memory cell fills to suggest page cache data arriving -->
+    <rect x="525" y="211" width="130" height="21" fill="#b7e4c7" opacity="0.7"/>
+    <rect x="525" y="233" width="100" height="21" fill="#b7e4c7" opacity="0.5"/>
+    <rect x="525" y="255" width="60" height="21" fill="#b7e4c7" opacity="0.3"/>
+
+    <text x="590" y="198" text-anchor="middle" font-size="11" fill="#888" font-style="italic">Page Cache</text>
+
+    <!-- Labels -->
+    <text x="590" y="326" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">System Memory</text>
+    <text x="590" y="344" text-anchor="middle" font-size="11" fill="#666">(Page Cache)</text>
+  </g>
+
+  <!-- ===================== CPU INTERRUPT ARROW ===================== -->
+  <g id="cpu-interrupt">
+    <!-- Arrow from disk controller area up and right toward CPU -->
+    <!-- Start: top of disk box; End: left side of CPU box -->
+    <!-- Route: from disk controller (110, 155) up to (110, 100), then right to (750, 100), then down to CPU (750, 170) -->
+    <polyline points="110,155 110,95 750,95 750,170"
+              fill="none" stroke="#e67e22" stroke-width="2.5" stroke-dasharray="8,4"/>
+    <!-- Arrowhead at CPU -->
+    <polygon points="743,170 750,186 757,170" fill="#e67e22"/>
+
+    <!-- IRQ label along the top path -->
+    <text x="430" y="82" text-anchor="middle" font-size="14" font-weight="bold" fill="#c0392b">Hardware Interrupt (IRQ)</text>
+    <text x="430" y="116" text-anchor="middle" font-size="11" fill="#888">signals CPU: data ready</text>
+  </g>
+
+  <!-- ===================== CPU ===================== -->
+  <g id="cpu">
+    <rect x="680" y="170" width="160" height="140" rx="8" fill="#fff3e0" stroke="#555" stroke-width="2"/>
+
+    <!-- CPU core grid -->
+    <rect x="700" y="188" width="55" height="50" rx="4" fill="#ffe0b2" stroke="#aaa" stroke-width="1"/>
+    <text x="727" y="217" text-anchor="middle" font-size="10" fill="#555">Core 0</text>
+
+    <rect x="765" y="188" width="55" height="50" rx="4" fill="#ffe0b2" stroke="#aaa" stroke-width="1"/>
+    <text x="792" y="217" text-anchor="middle" font-size="10" fill="#555">Core 1</text>
+
+    <rect x="700" y="248" width="55" height="50" rx="4" fill="#ffe0b2" stroke="#aaa" stroke-width="1"/>
+    <text x="727" y="277" text-anchor="middle" font-size="10" fill="#555">Core 2</text>
+
+    <rect x="765" y="248" width="55" height="50" rx="4" fill="#ffe0b2" stroke="#aaa" stroke-width="1"/>
+    <text x="792" y="277" text-anchor="middle" font-size="10" fill="#555">Core 3</text>
+
+    <!-- Labels -->
+    <text x="760" y="333" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">CPU</text>
+    <text x="760" y="351" text-anchor="middle" font-size="11" fill="#666">handles interrupt</text>
+  </g>
+
+  <!-- ===================== STEP NUMBERS / FLOW INDICATORS ===================== -->
+  <!-- Step 1: I/O Command -->
+  <circle cx="110" cy="155" r="11" fill="#4A90D9"/>
+  <text x="110" y="160" text-anchor="middle" font-size="12" font-weight="bold" fill="white">1</text>
+
+  <!-- Step 2: DMA Transfer -->
+  <circle cx="348" cy="195" r="11" fill="#4A90D9"/>
+  <text x="348" y="200" text-anchor="middle" font-size="12" font-weight="bold" fill="white">2</text>
+
+  <!-- Step 3: Data in Memory -->
+  <circle cx="590" cy="175" r="11" fill="#27ae60"/>
+  <text x="590" y="180" text-anchor="middle" font-size="12" font-weight="bold" fill="white">3</text>
+
+  <!-- Step 4: IRQ -->
+  <circle cx="430" cy="65" r="11" fill="#e67e22"/>
+  <text x="430" y="70" text-anchor="middle" font-size="12" font-weight="bold" fill="white">4</text>
+
+  <!-- Step 5: CPU wakes -->
+  <circle cx="760" cy="170" r="11" fill="#e67e22"/>
+  <text x="760" y="175" text-anchor="middle" font-size="12" font-weight="bold" fill="white">5</text>
+
+  <!-- ===================== LEGEND ===================== -->
+  <g id="legend" transform="translate(30, 420)">
+    <!-- DMA -->
+    <line x1="0" y1="10" x2="30" y2="10" stroke="#4A90D9" stroke-width="3"/>
+    <polygon points="30,5 44,10 30,15" fill="#4A90D9"/>
+    <text x="50" y="15" font-size="11" fill="#555">DMA data flow</text>
+
+    <!-- IRQ -->
+    <line x1="160" y1="10" x2="190" y2="10" stroke="#e67e22" stroke-width="2.5" stroke-dasharray="6,3"/>
+    <polygon points="190,5 204,10 190,15" fill="#e67e22"/>
+    <text x="210" y="15" font-size="11" fill="#555">Hardware interrupt (IRQ)</text>
+
+    <!-- Step numbers -->
+    <circle cx="395" cy="10" r="9" fill="#4A90D9"/>
+    <text x="395" y="14" text-anchor="middle" font-size="10" font-weight="bold" fill="white">N</text>
+    <text x="410" y="15" font-size="11" fill="#555">Step number</text>
+  </g>
+</svg>

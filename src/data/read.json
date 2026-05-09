@@ -1,0 +1,351 @@
+{
+  "id": "read",
+  "name": "read()",
+  "description": "Transfers data from a file descriptor into a user-space buffer. The kernel traverses the VFS layer, checks the page cache, and if necessary issues a block I/O request to bring data from disk into memory before copying it to user space.",
+  "signature": "ssize_t read(int fd, void *buf, size_t count)",
+  "entry_point_file": "fs/read_write.c",
+  "main_flow": [
+    {
+      "id": "read-user-space",
+      "title": "User Space",
+      "description": "The user-space program invokes read(fd, buf, 4096) via the C library wrapper (glibc), which places the syscall number (NR_read = 0 on x86-64) in %rax and the three arguments in %rdi, %rsi, %rdx, then executes the syscall instruction to trap into the kernel.",
+      "data_structures": ["task_struct", "file"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "read-user-space-glibc",
+          "title": "glibc read() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a thin wrapper around the raw syscall. It sets up the ABI-defined calling convention: %rax = __NR_read (0), %rdi = fd, %rsi = buf, %rdx = count. No kernel involvement yet — this is pure user-space setup.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags into MSR_LSTAR-defined kernel entry, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 554,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-user-space-file-table",
+          "title": "File descriptor lookup",
+          "type": "data",
+          "description": "Before the syscall fires, the file descriptor integer is merely an index. The kernel will resolve it against the process's file descriptor table (task_struct->files->fdt->fd[fd]) in the Kernel Entry stage.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "read-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The CPU is now in ring 0. The generic syscall dispatch table routes NR_read to sys_read(), which is the kernel implementation of read(). The kernel validates the file descriptor and retrieves the struct file pointer from the process file table.",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "read-kernel-entry-system-call",
+          "title": "system_call entry point",
+          "type": "code",
+          "description": "entry_64.S saves all general-purpose registers, re-enables interrupts, then calls sys_call_table[%rax] to dispatch to the correct syscall handler. For NR_read (0), this calls sys_read().",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 554,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  SAVE_ARGS 8,0\n  movq %rax,ORIG_RAX-ARGOFFSET(%rsp)\n  call *sys_call_table(,%rax,8)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-kernel-entry-sys-read",
+          "title": "SYSCALL_DEFINE3(read, ...)",
+          "type": "code",
+          "description": "sys_read() is defined with the SYSCALL_DEFINE3 macro in fs/read_write.c. It calls fget_light() to look up the struct file from the current process's file descriptor table, validates the fd, then calls vfs_read(file, buf, count, &pos).",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 391,
+            "snippet": "SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)\n{\n  struct file *file;\n  ssize_t ret = -EBADF;\n  int fput_needed;\n\n  file = fget_light(fd, &fput_needed);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-kernel-entry-fget",
+          "title": "fget_light() — fd to struct file",
+          "type": "code",
+          "description": "fget_light() walks task_struct->files->fdt->fd[fd] to return the struct file pointer without taking a full reference when the file table is not shared. This is a fast path for single-threaded processes.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/file.c",
+            "line": 52,
+            "snippet": "struct file *fget_light(unsigned int fd, int *fput_needed)\n{\n  struct file *file;\n  struct files_struct *files = current->files;\n  *fput_needed = 0;\n  if (likely((atomic_read(&files->count) == 1))) {\n    file = fcheck_files(files, fd);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-kernel-entry-pos",
+          "title": "File position tracking",
+          "type": "data",
+          "description": "sys_read() retrieves file->f_pos (the current read offset) and passes a pointer to vfs_read(). After the read succeeds, f_pos is advanced by the number of bytes read, making sequential reads work correctly.",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 400,
+            "snippet": "  if (file) {\n    loff_t pos = file_pos_read(file);\n    ret = vfs_read(file, buf, count, &pos);\n    file_pos_write(file, pos);\n    fput_light(file, fput_needed);\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "read-vfs",
+      "title": "VFS Layer",
+      "description": "The Virtual File System (VFS) layer provides a uniform interface over all filesystems. vfs_read() performs permission checks and then dispatches through the file's f_op->read (or f_op->aio_read) function pointer, which leads into the specific filesystem implementation (e.g., ext2, ext4).",
+      "data_structures": ["file", "inode"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "read-vfs-vfs-read",
+          "title": "vfs_read()",
+          "type": "code",
+          "description": "vfs_read() first calls rw_verify_area() to verify the file region is accessible and the fd is open for reading, then invokes security_file_permission() for mandatory access control. Finally it calls the file-operation read method.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 276,
+            "snippet": "ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{\n  ssize_t ret;\n  if (!(file->f_mode & FMODE_READ))\n    return -EBADF;\n  if (!file->f_op || (!file->f_op->read && !file->f_op->aio_read))\n    return -EINVAL;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-vfs-fop-dispatch",
+          "title": "file_operations dispatch",
+          "type": "code",
+          "description": "vfs_read() calls file->f_op->read() if it exists, otherwise falls back to do_sync_read() which wraps the aio_read path. Each filesystem registers its own file_operations struct that implements the read method appropriate for its on-disk layout.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 296,
+            "snippet": "  if (file->f_op->read)\n    ret = file->f_op->read(file, buf, count, pos);\n  else\n    ret = do_sync_read(file, buf, count, pos);\n  if (ret > 0) {\n    fsnotify_access(file->f_dentry);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-vfs-file-operations-struct",
+          "title": "struct file_operations",
+          "type": "data",
+          "description": "struct file_operations is the central VFS dispatch table. It contains function pointers such as read, write, llseek, mmap, and open. Each filesystem or device driver fills in the methods it supports; the VFS calls through these pointers to reach filesystem-specific code.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 1516,
+            "snippet": "struct file_operations {\n  struct module *owner;\n  loff_t (*llseek) (struct file *, loff_t, int);\n  ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);\n  ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-vfs-inode",
+          "title": "inode and address_space",
+          "type": "data",
+          "description": "The struct inode carries file metadata (size, permissions, block map). Its i_mapping field points to the struct address_space that manages the page cache for this file. The filesystem read path uses i_mapping to locate cached pages or trigger a fill from disk.",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 748,
+            "snippet": "struct inode {\n  umode_t\t\t\ti_mode;\n  uid_t\t\t\ti_uid;\n  gid_t\t\t\ti_gid;\n  const struct inode_operations\t*i_op;\n  struct super_block\t*i_sb;\n  struct address_space\t*i_mapping;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "read-storage-stack",
+      "title": "Storage Stack",
+      "description": "The filesystem's read method first probes the page cache for the requested data. On a cache miss it allocates a page, calls the filesystem readpage operation (e.g., ext2_readpage), which eventually calls submit_bio() to push a BIO request through the block layer down to the device driver.",
+      "data_structures": ["inode", "address_space"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "read-storage-page-cache-lookup",
+          "title": "Page cache lookup (cache miss)",
+          "type": "code",
+          "description": "do_generic_file_read() calls find_get_page() to search the file's radix tree (address_space->page_tree) for the page covering the requested offset. On a cache miss the function falls through to allocate a new page and mark it as needing I/O.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/filemap.c",
+            "line": 1088,
+            "snippet": "find_page:\n  page = find_get_page(mapping, index);\n  if (!page) {\n    page_cache_sync_readahead(mapping, ra, filp, index, last_index - index);\n    page = find_get_page(mapping, index);\n    if (unlikely(page == NULL))\n      goto no_cached_page;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-storage-ext2-readpage",
+          "title": "ext2_readpage / mpage_readpage",
+          "type": "code",
+          "description": "For an ext2 filesystem the address_space_operations->readpage pointer is set to ext2_readpage, which is an alias for mpage_readpage. This function maps the logical file block to a physical disk block via ext2_get_block(), then builds a BIO descriptor for the block layer.",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "fs/ext2/inode.c",
+            "line": 773,
+            "snippet": "static int ext2_readpage(struct file *file, struct page *page)\n{\n  return mpage_readpage(page, ext2_get_block);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-storage-submit-bio",
+          "title": "submit_bio() — block layer entry",
+          "type": "code",
+          "description": "submit_bio() is the kernel's universal entry point for block I/O. It increments the per-task I/O accounting, then calls generic_make_request(), which routes the BIO through the I/O scheduler (CFQ, deadline, etc.) and ultimately calls the device driver's request_fn.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/blk-core.c",
+            "line": 1832,
+            "snippet": "void submit_bio(int rw, struct bio *bio)\n{\n  int count = bio_sectors(bio);\n  bio->bi_rw |= rw;\n  if (bio_has_data(bio)) {\n    if (rw & WRITE) { ... }\n    else\n      task_io_account_read(count << 9);\n  }\n  generic_make_request(bio);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-storage-io-scheduler",
+          "title": "I/O scheduler queue",
+          "type": "concept",
+          "description": "The I/O scheduler (elevator) merges and reorders BIO requests to minimize disk head movement. In Linux 2.6.32 the default is CFQ (Completely Fair Queuing). The request is inserted into the request queue and the device driver is notified when it becomes the next request to service.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/elevator.c",
+            "line": 474,
+            "snippet": "void elv_insert(struct request_queue *q, struct request *rq, int where)\n{\n  struct list_head *pos;\n  unsigned ordseq;\n  int unplug_it = 1;\n  trace_block_rq_insert(q, rq);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "read-hardware-io",
+      "title": "Hardware I/O",
+      "description": "The disk controller receives an ATA/SATA command from the device driver. The drive's internal firmware seeks to the requested sector and reads it into the drive buffer. A DMA engine then transfers the data directly from the drive buffer to the kernel page in RAM, after which the disk controller asserts an interrupt line.",
+      "data_structures": [],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "read-hw-ata-command",
+          "title": "Disk controller receives ATA/SATA command",
+          "type": "hardware",
+          "description": "The AHCI or legacy ATA driver writes a command FIS (Frame Information Structure) to the HBA's command slot registers, specifying the LBA (Logical Block Address) and sector count. The SATA host controller forwards this command to the disk over the SATA link.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "The AHCI Host Bus Adapter receives a READ DMA EXT command via a Command FIS. The drive's firmware seeks the read/write head (or, for SSDs, looks up the flash translation layer) to the requested LBA and reads the sector data into the drive's internal buffer.",
+          "svg_asset": null
+        },
+        {
+          "id": "read-hw-dma-transfer",
+          "title": "DMA engine transfers data to RAM",
+          "type": "hardware",
+          "description": "Once the disk has the data in its internal buffer, the AHCI DMA engine performs a bus-master DMA transfer, writing the sector data directly to the physical address of the kernel page allocated during the page cache miss. The CPU is not involved in moving the data bytes.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "The AHCI PRDT (Physical Region Descriptor Table) entry points to the kernel page frame. The HBA's DMA engine writes 512-byte (or 4 KiB native-sector) blocks directly into RAM using PCI bus-master DMA, bypassing the CPU data path entirely.",
+          "svg_asset": null
+        },
+        {
+          "id": "read-hw-irq",
+          "title": "Hardware interrupt on transfer complete",
+          "type": "hardware",
+          "description": "When all sectors have been transferred to RAM, the AHCI controller asserts an interrupt on the interrupt line connected to the I/O APIC. The CPU's local APIC routes the interrupt to the currently running CPU (or the least-loaded CPU), suspending the current execution context and vectoring to the disk interrupt handler.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "The AHCI HBA sets the interrupt status register and asserts IRQ (typically IRQ 11 or MSI vector). The I/O APIC or MSI mechanism delivers a fixed-vector interrupt to a CPU, which saves registers and enters the kernel interrupt handler at irq_return in entry_64.S.",
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "read-return-path",
+      "title": "Return Path",
+      "description": "The disk interrupt handler completes the BIO, marks the page uptodate in the page cache, and wakes any tasks waiting on the page. Control returns to do_generic_file_read(), which calls copy_to_user() to transfer the data from the kernel page to the user-space buffer. sys_read() then returns the byte count through the syscall return path back to user space.",
+      "data_structures": ["task_struct", "file", "address_space"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "read-return-bio-endio",
+          "title": "bio->bi_end_io callback",
+          "type": "code",
+          "description": "The AHCI interrupt handler calls blk_complete_request(), which eventually invokes the BIO's bi_end_io callback. For page cache reads this is end_bio_bh_io_sync() or mpage_end_io_read(), which marks the buffer heads as uptodate and calls unlock_page() to wake tasks sleeping on the page lock.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/blk-core.c",
+            "line": 1819,
+            "snippet": "void blk_finish_request(struct request *req, int error)\n{\n  if (blk_rq_tagged(req))\n    blk_queue_end_tag(req->q, req);\n  BUG_ON(blk_queued_rq(req));\n  if (unlikely(laptop_mode) && blk_fs_request(req))\n    laptop_io_completion();\n  if (req->end_io)\n    req->end_io(req, error);\n  else"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-return-page-cache-update",
+          "title": "Page cache updated — add_to_page_cache_lru()",
+          "type": "code",
+          "description": "add_to_page_cache_lru() inserts the now-populated page into the file's radix tree and adds it to the LRU list for future reclaim decisions. The page is now available for subsequent reads of the same file offset without disk I/O.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/filemap.c",
+            "line": 453,
+            "snippet": "int add_to_page_cache_lru(struct page *page, struct address_space *mapping,\n  pgoff_t offset, gfp_t gfp_mask)\n{\n  int ret = add_to_page_cache_locked(page, mapping, offset, gfp_mask);\n  if (ret == 0)\n    lru_cache_add_file(page);\n  return ret;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-return-copy-to-user",
+          "title": "copy_to_user()",
+          "type": "code",
+          "description": "do_generic_file_read() calls copy_to_user() (or file_read_actor()) to copy the requested bytes from the kernel page into the user-space buffer. copy_to_user() uses optimized MOVS instructions and performs the copy under a non-faulting memory model, returning the number of bytes not copied (zero on success).",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/lib/usercopy_64.c",
+            "line": 35,
+            "snippet": "unsigned long\ncopy_to_user(void __user *to, const void *from, unsigned long n)\n{\n  if (likely(access_ok(VERIFY_WRITE, to, n)))\n    n = __copy_to_user(to, from, n);\n  return n;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "read-return-syscall-exit",
+          "title": "Syscall return — sysret",
+          "type": "code",
+          "description": "sys_read() returns the byte count (or a negative errno) to the syscall dispatch in entry_64.S. The RESTORE_ARGS macro reloads the saved user-space registers, and the sysretq instruction atomically restores %rip, %rflags, and switches back to ring 3. The C library wrapper receives the return value in %rax.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 621,
+            "snippet": "syscall_return:\n  cli\n  SAVE_REST\n  movq PER_CPU_VAR(old_rsp), %rcx\n  movq %rcx, RSP-ARGOFFSET(%rsp)\n  RESTORE_ARGS 1,-ARG_SKIP,0\n  movq EFLAGS-ARGOFFSET(%rsp), %r11\n  sysretq"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

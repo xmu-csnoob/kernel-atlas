@@ -1,0 +1,325 @@
+{
+  "id": "fork",
+  "name": "fork()",
+  "description": "Creates a new process by duplicating the calling process. The child process is an exact copy of the parent, sharing copy-on-write page tables, duplicated file descriptors, and signal handlers. The kernel allocates a new task_struct, pid, and kernel stack, then integrates the child into the scheduler runqueue.",
+  "signature": "pid_t fork(void)",
+  "entry_point_file": "kernel/fork.c",
+  "main_flow": [
+    {
+      "id": "fork-user-space",
+      "title": "User Space — fork() / clone() call",
+      "description": "The user-space program invokes fork() (or the lower-level clone() system call). The C library wrapper issues the syscall instruction, transitioning from ring 3 to ring 0. On x86-64, this uses the SYSCALL instruction which stores the return address in RCX and RFLAGS in R11 before jumping to the kernel entry point.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "fork-libc-wrapper",
+          "title": "glibc fork() wrapper",
+          "description": "The glibc fork() function calls the clone() syscall with flags SIGCHLD, setting up the arguments for the kernel. It invokes the syscall instruction (or int 0x80 on x86-32) to trigger the transition into kernel mode. The syscall number for fork on x86 is 57 (x86-64) or 2 (x86-32).",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-syscall-instruction",
+          "title": "SYSCALL / int 0x80 instruction",
+          "description": "The CPU executes the SYSCALL instruction which atomically saves RIP/RFLAGS, switches the stack pointer to the kernel stack defined in the TSS, and jumps to the MSR_LSTAR entry point (system_call in entry_64.S). The hardware then runs in ring 0 with the kernel's GS base.",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 169,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq  %rsp,PER_CPU_VAR(old_rsp)\n  movq  PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-kernel-entry",
+      "title": "Kernel Entry — syscall dispatch → sys_fork → do_fork",
+      "description": "The kernel's syscall dispatch table routes the syscall number to sys_fork() (x86-32) or stub_clone() (x86-64). These architecture-specific stubs gather register arguments and call the architecture-independent do_fork() function in kernel/fork.c, which performs the actual process duplication logic.",
+      "data_structures": ["task_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "fork-sys-fork",
+          "title": "sys_fork() / sys_clone() entry",
+          "description": "On x86-32, sys_fork() is defined in arch/x86/kernel/process.c. It calls do_fork() with clone flags SIGCHLD, passing the user-space stack pointer from the pt_regs structure. On x86-64, stub_clone() collects the register arguments and delegates to sys_clone(), which also calls do_fork().",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process.c",
+            "line": 165,
+            "snippet": "int sys_fork(struct pt_regs *regs)\n{\n  return do_fork(SIGCHLD, regs->sp, regs, 0, NULL, NULL);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-do-fork-entry",
+          "title": "do_fork() entry point",
+          "description": "do_fork() in kernel/fork.c is the central fork implementation. It validates clone flags for consistency, then calls copy_process() to duplicate the parent's task_struct and all associated resources. After copy_process() returns, do_fork() calls wake_up_new_task() to schedule the child.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1379,
+            "snippet": "long do_fork(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *parent_tidptr,\n  int __user *child_tidptr)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-clone-flags",
+          "title": "CLONE_* flags",
+          "description": "The clone_flags parameter controls what resources are shared between parent and child. CLONE_VM shares the address space (used by threads), CLONE_FILES shares file descriptors, CLONE_SIGHAND shares signal handlers. A plain fork() uses only SIGCHLD as the flags value, resulting in full duplication of all resources.",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "include/linux/sched.h",
+            "line": 5,
+            "snippet": "#define CLONE_VM      0x00000100\n#define CLONE_FILES   0x00000400\n#define CLONE_SIGHAND 0x00000800\n#define CLONE_THREAD  0x00010000"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-process-duplication",
+      "title": "Process Duplication — copy_process → dup_task_struct → new task_struct",
+      "description": "copy_process() is the heart of fork: it calls dup_task_struct() to allocate a new task_struct and kernel stack, copies or shares each process resource (memory map, file descriptors, signal handlers) depending on clone_flags, initializes scheduling fields, and assigns a new PID via alloc_pid().",
+      "data_structures": ["task_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "fork-copy-process",
+          "title": "copy_process() orchestration",
+          "description": "copy_process() in kernel/fork.c is the comprehensive function that duplicates a process. It validates flag combinations, calls dup_task_struct() first, then proceeds to copy each subsystem (creds, mm, files, signals, etc.). It initializes the new task's list linkage and returns a pointer to the child task_struct on success.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1070,
+            "snippet": "static struct task_struct *copy_process(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *child_tidptr,\n  struct pid *pid)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-dup-task-struct",
+          "title": "dup_task_struct() — new task_struct + kernel stack",
+          "description": "dup_task_struct() allocates a new task_struct with alloc_task_struct() and a new 8KB (THREAD_SIZE) kernel stack with alloc_thread_info(). It then does a plain struct copy of the parent task_struct into the new one, and sets up the thread_info pointer to point at the bottom of the new kernel stack.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 207,
+            "snippet": "static struct task_struct *dup_task_struct(struct task_struct *orig)\n{\n  struct task_struct *tsk;\n  struct thread_info *ti;\n  tsk = alloc_task_struct();\n  if (!tsk)\n    return NULL;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-task-struct-init",
+          "title": "task_struct field initialization",
+          "description": "After dup_task_struct() copies the parent's fields, copy_process() reinitializes fields that must be unique per process: the PID, state (set to TASK_UNINTERRUPTIBLE), usage count, list heads for children/siblings, CPU time accounting, and the thread_struct for register state including the instruction pointer set to ret_from_fork.",
+          "type": "data",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1186,
+            "snippet": "p->did_exec = 0;\n  delayacct_tsk_init(p);\n  copy_flags(clone_flags, p);\n  INIT_LIST_HEAD(&p->children);\n  INIT_LIST_HEAD(&p->sibling);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-alloc-pid",
+          "title": "alloc_pid() — new PID assignment",
+          "description": "alloc_pid() in kernel/pid.c allocates a new struct pid from the pidmap bitmap. The kernel maintains separate PID namespaces; alloc_pid() finds the next free PID number in each applicable namespace, allocates a struct pid object, and attaches it to the new task_struct via the task's pids[] array.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid.c",
+            "line": 258,
+            "snippet": "struct pid *alloc_pid(struct pid_namespace *ns)\n{\n  struct pid *pid;\n  enum pid_type type;\n  int i, nr;\n  struct pid_namespace *tmp;\n  struct upid *upid;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-memory-resources",
+      "title": "Memory & Resources — copy_mm (CoW page tables) → copy_files → copy_sighand",
+      "description": "copy_process() duplicates memory mappings and other resources controlled by clone_flags. For a plain fork(), copy_mm() calls dup_mm() which duplicates the mm_struct and marks all writable pages copy-on-write in both parent and child page tables. copy_files() clones the file descriptor table, and copy_sighand() duplicates signal handler state.",
+      "data_structures": ["task_struct", "mm_struct", "files_struct", "signal_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "fork-copy-mm",
+          "title": "copy_mm() — address space duplication",
+          "description": "copy_mm() checks CLONE_VM: if set (threads), the child shares the parent's mm_struct. Otherwise, it calls dup_mm() to allocate a new mm_struct, copy all vm_area_struct VMAs via dup_mmap(), and walk all page table entries calling copy_page_range() to set PTEs as read-only and mark them copy-on-write for both parent and child.",
+          "type": "code",
+          "data_structures": ["mm_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 702,
+            "snippet": "static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct mm_struct *mm, *oldmm;\n  int retval;\n  tsk->min_flt = tsk->maj_flt = 0;\n  tsk->nvcsw = tsk->nivcsw = 0;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-copy-page-range",
+          "title": "copy_page_range() — CoW PTE setup",
+          "description": "copy_page_range() in mm/memory.c walks the parent's page tables (PGD→PUD→PMD→PTE) and for each present, writable PTE, clears the write bit in both parent and child and increments the page reference count. This implements copy-on-write: a page fault on either process later will call do_wp_page() to create a private copy.",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 757,
+            "snippet": "int copy_page_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,\n  struct vm_area_struct *vma)\n{\n  pgd_t *src_pgd, *dst_pgd;\n  unsigned long next;\n  unsigned long addr = vma->vm_start;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-copy-files",
+          "title": "copy_files() — file descriptor table clone",
+          "description": "copy_files() checks CLONE_FILES: if set (threads), the child increments the reference count of the parent's files_struct and shares it. Otherwise, dup_fd() allocates a new files_struct, copies the fdtable with all open file pointers, and increments struct file reference counts for each open descriptor.",
+          "type": "code",
+          "data_structures": ["files_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1014,
+            "snippet": "static int copy_files(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct files_struct *oldf, *newf;\n  oldf = current->files;\n  if (!oldf)\n    goto out;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-copy-sighand",
+          "title": "copy_sighand() — signal handler duplication",
+          "description": "copy_sighand() checks CLONE_SIGHAND: if set, the child shares the parent's sighand_struct (reference counted). Otherwise, it allocates a new sighand_struct and copies the parent's sigaction array with all signal handler function pointers and flags. copy_signal() also duplicates the signal_struct for pending signals and session/group info.",
+          "type": "code",
+          "data_structures": ["signal_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1021,
+            "snippet": "static int copy_sighand(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct sighand_struct *sig;\n  if (clone_flags & CLONE_SIGHAND) {\n    atomic_inc(&current->sighand->count);\n    return 0;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-scheduler-integration",
+      "title": "Scheduler Integration — sched_fork → wake_up_new_task → runqueue",
+      "description": "Before the child can run, it must be integrated into the CFS (Completely Fair Scheduler). sched_fork() initializes the child's sched_entity and places it on a runqueue. wake_up_new_task() then marks the child TASK_RUNNING and enqueues it on the CPU's runqueue, making it eligible for scheduling.",
+      "data_structures": ["task_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "fork-sched-fork",
+          "title": "sched_fork() — scheduling entity init",
+          "description": "sched_fork() in kernel/sched.c initializes the child's sched_entity (se) embedded in task_struct. It sets the child's scheduling policy, priority (inherited from parent), and initializes the CFS virtual runtime (vruntime). The task state is set to TASK_RUNNING but it is not yet enqueued on any runqueue.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2355,
+            "snippet": "void sched_fork(struct task_struct *p, int clone_flags)\n{\n  int cpu = get_cpu();\n  __sched_fork(p);\n  p->state = TASK_RUNNING;\n  p->se.exec_start = 0;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-sched-entity-init",
+          "title": "struct sched_entity initialization",
+          "description": "The sched_entity (p->se) inside the child's task_struct is initialized with vruntime set to max(parent_vruntime, cfs_rq->min_vruntime) to prevent the new task from monopolizing the CPU by starting with an unfairly low virtual time. The load weight is set based on the task's nice value.",
+          "type": "data",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2389,
+            "snippet": "static void task_fork_fair(struct task_struct *p)\n{\n  struct cfs_rq *cfs_rq = task_cfs_rq(current);\n  struct sched_entity *se = &p->se, *curr = cfs_rq->curr;\n  int this_cpu = smp_processor_id();"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-wake-up-new-task",
+          "title": "wake_up_new_task() — enqueue on runqueue",
+          "description": "wake_up_new_task() in kernel/sched.c is called from do_fork() after copy_process() completes. It acquires the runqueue lock, calls activate_task() → enqueue_task() to insert the child's sched_entity into the CFS red-black tree, and may trigger a reschedule if the child has higher priority than the current task.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2418,
+            "snippet": "void wake_up_new_task(struct task_struct *p, unsigned long clone_flags)\n{\n  unsigned long flags;\n  struct rq *rq;\n  rq = task_rq_lock(p, &flags);\n  activate_task(rq, p, 0);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-return",
+      "title": "Return — parent gets child PID; child begins at ret_from_fork",
+      "description": "do_fork() returns the child's PID to the parent process, which resumes execution after the fork() call with the child PID as the return value. The child process begins execution at ret_from_fork in arch/x86/kernel/entry_64.S, which returns 0 to user space, making fork() return twice — once in each process.",
+      "data_structures": ["task_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "fork-parent-return",
+          "title": "Parent returns child PID",
+          "description": "copy_process() returns the child task_struct pointer to do_fork(). do_fork() extracts the PID number using task_pid_vnr() and returns it. The kernel syscall exit path restores the parent's registers (with RAX set to the child PID) and executes SYSRET to return to user space with the child PID as fork()'s return value.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1475,
+            "snippet": "nr = task_pid_vnr(p);\n  if (clone_flags & CLONE_PARENT_SETTID)\n    put_user(nr, parent_tidptr);\n  /* ... */\n  return nr;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-ret-from-fork",
+          "title": "Child resumes at ret_from_fork with return value 0",
+          "description": "The child task_struct's thread.ip was set to ret_from_fork during copy_process(). When the scheduler first runs the child, it jumps to ret_from_fork in entry_64.S. This assembly stub calls schedule_tail() to release the runqueue lock, then calls the user-space return path with RAX=0, so fork() returns 0 in the child.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 595,
+            "snippet": "ENTRY(ret_from_fork)\n  DEFAULT_FRAME\n  push %rbp\n  CFI_ADJUST_CFA_OFFSET 8\n  movq %rsp,%rbp\n  CFI_DEF_CFA_REGISTER rbp\n  call schedule_tail"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-child-zero-return",
+          "title": "Child's fork() return value: 0",
+          "description": "By convention, fork() returns 0 in the child process. This is achieved by copy_process() zeroing the child's pt_regs.ax field (the syscall return value register) during task_struct initialization. When the child eventually reaches the syscall return path, it finds RAX=0 and returns that to user space.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1288,
+            "snippet": "/* child gets zero as return value */\n  p->thread.ptrace = 0;\n  /* clear the user-visible return value register */\n  regs->ax = 0;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}
