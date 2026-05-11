@@ -1,0 +1,345 @@
+{
+  "id": "ioctl",
+  "name": "ioctl()",
+  "description": "Performs device-specific input/output operations on a file descriptor. Unlike read() and write() which handle generic byte streams, ioctl() passes a command code and an optional argument to the device driver, enabling control operations such as configuring terminal settings, querying device capabilities, or performing custom hardware commands.",
+  "signature": "int ioctl(int fd, unsigned long request, ...)",
+  "entry_point_file": "fs/ioctl.c",
+  "main_flow": [
+    {
+      "id": "ioctl-user-space",
+      "title": "User Space",
+      "description": "The user-space program invokes ioctl(fd, request, argp) via the C library wrapper (glibc), which places the syscall number (NR_ioctl = 16 on x86-64) in %rax, the file descriptor in %rdi, the command code in %rsi, and the argument pointer in %rdx, then executes the syscall instruction to trap into the kernel.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "ioctl-user-space-glibc",
+          "title": "glibc ioctl() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a variadic wrapper around the raw syscall. It packs the request code and argument into registers: %rax = __NR_ioctl (16), %rdi = fd, %rsi = request, %rdx = arg. The request code encodes direction (read/write/none), size, type, and number in a 32-bit value.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-user-space-request-encoding",
+          "title": "ioctl request encoding",
+          "type": "concept",
+          "description": "The request argument is encoded with _IOC macros: bits 0-7 hold the command number, bits 8-15 the type ('magic'), bits 16-29 the size of the argument struct, and bits 30-31 the direction (_IOC_NONE, _IOC_WRITE, _IOC_READ, _IOC_READ|_IOC_WRITE). Drivers use these bits to validate the request.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags into MSR_LSTAR-defined kernel entry, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The CPU is now in ring 0. The generic syscall dispatch table routes NR_ioctl to sys_ioctl(), defined in fs/ioctl.c. The kernel validates the file descriptor, retrieves the struct file pointer from the process file table, and begins the ioctl dispatch chain.",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "ioctl-kernel-entry-system-call",
+          "title": "system_call entry point",
+          "type": "code",
+          "description": "entry_64.S saves all general-purpose registers, re-enables interrupts, then calls sys_call_table[%rax] to dispatch to the correct syscall handler. For NR_ioctl (16), this calls sys_ioctl().",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  SAVE_ARGS 8,0\n  movq %rax,ORIG_RAX-ARGOFFSET(%rsp)\n  call *sys_call_table(,%rax,8)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-kernel-entry-sys-ioctl",
+          "title": "SYSCALL_DEFINE3(ioctl, ...)",
+          "type": "code",
+          "description": "sys_ioctl() is the top-level kernel entry for ioctl. It calls fget_light() to look up the struct file from the current process's file descriptor table, validates the fd, then calls do_vfs_ioctl() with the file, command code, and argument.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 590,
+            "snippet": "SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)\n{\n  struct file *filp;\n  int error;\n  int fput_needed;\n\n  filp = fget_light(fd, &fput_needed);\n  if (!filp)\n    return -EBADF;\n  error = vfs_ioctl(filp, cmd, arg);\n  fput_light(filp, fput_needed);\n  return error;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-kernel-entry-fget",
+          "title": "fget_light() — fd to struct file",
+          "type": "code",
+          "description": "fget_light() walks task_struct->files->fdt->fd[fd] to return the struct file pointer without taking a full reference when the file table is not shared. For ioctl, the file must be open (any mode is acceptable since ioctl is mode-agnostic).",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/file_table.c",
+            "line": 326,
+            "snippet": "struct file *fget_light(unsigned int fd, int *fput_needed)\n{\n  struct file *file;\n  struct files_struct *files = current->files;\n  *fput_needed = 0;\n  if (likely((atomic_read(&files->count) == 1))) {\n    file = fcheck_files(files, fd);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-vfs",
+      "title": "VFS Layer",
+      "description": "The VFS ioctl layer (vfs_ioctl and do_vfs_ioctl) handles generic ioctl commands that apply to all file types before dispatching to device-specific handlers. It processes commands like FIONREAD, FIOASYNC, and FIGETBSZ for regular files, then falls through to the file's unlocked_ioctl method for driver-specific commands.",
+      "data_structures": ["file", "inode"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "ioctl-vfs-vfs-ioctl",
+          "title": "vfs_ioctl()",
+          "type": "code",
+          "description": "vfs_ioctl() is a thin wrapper that calls do_vfs_ioctl(). It exists to provide a consistent VFS interface and can be called from kernel code directly without going through the syscall path.",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 575,
+            "snippet": "int vfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)\n{\n  return do_vfs_ioctl(filp, cmd, arg);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-vfs-do-vfs-ioctl",
+          "title": "do_vfs_ioctl() — generic commands",
+          "type": "code",
+          "description": "do_vfs_ioctl() handles generic ioctl commands before device-specific dispatch. For regular files it handles FIONREAD (bytes available), FIGETBSZ (block size), FIOASYNC (async I/O), and FIOCLEX (close-on-exec). For unhandled commands, it falls through to filp->f_op->unlocked_ioctl.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 500,
+            "snippet": "static long do_vfs_ioctl(struct file *filp, unsigned int cmd,\n\t\t\t unsigned long arg)\n{\n  int error = 0;\n  switch (cmd) {\n  case FIOCLEX:\n    set_close_on_exec(filp->f_dentry->d_inode->i_fd, 1);\n    break;\n  case FIONCLEX:\n    ...\n  case FIONREAD:\n    error = put_user(inode->i_size - filp->f_pos,\n\t\t     (int __user *)arg);\n    break;\n  ...\n  default:\n    if (S_ISREG(inode->i_mode))\n      error = file_ioctl(filp, cmd, arg);\n    else\n      error = vfs_ioctl(filp, cmd, arg);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-vfs-file-ioctl",
+          "title": "file_ioctl() — regular file ioctls",
+          "type": "code",
+          "description": "file_ioctl() handles ioctl commands specific to regular files, such as FIBMAP (block mapping), FIGETBSZ (filesystem block size), and FIONREAD. For commands it does not recognize, it dispatches to the filesystem's ioctl method via filp->f_op->unlocked_ioctl.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 430,
+            "snippet": "static long file_ioctl(struct file *filp, unsigned int cmd,\n\t\t       unsigned long arg)\n{\n  struct inode *inode = filp->f_dentry->d_inode;\n  int error;\n\n  switch (cmd) {\n  case FIBMAP: ...\n  case FIGETBSZ:\n    return put_user(inode->i_sb->s_blocksize,\n\t\t    (int __user *)arg);\n  ...\n  default:\n    if (filp->f_op && filp->f_op->unlocked_ioctl)\n      return filp->f_op->unlocked_ioctl(filp, cmd, arg);\n    return -ENOTTY;\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-vfs-unlocked-ioctl",
+          "title": "unlocked_ioctl function pointer",
+          "type": "data",
+          "description": "struct file_operations contains the unlocked_ioctl function pointer, which is the modern ioctl entry point that does not hold the Big Kernel Lock (BKL). Each device driver or filesystem fills in this pointer with its own ioctl handler. The VFS calls it with the struct file, command code, and user argument.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 1516,
+            "snippet": "struct file_operations {\n  struct module *owner;\n  loff_t (*llseek) (struct file *, loff_t, int);\n  ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);\n  ...\n  long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);\n  long (*compat_ioctl) (struct file *, unsigned int, unsigned long);\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-device-handler",
+      "title": "Device Handler",
+      "description": "The device driver's unlocked_ioctl handler receives the command code and argument. For character devices (e.g., tty, block devices, network interfaces), the handler interprets the command, validates the argument pointer, and performs the device-specific operation. This is where the real work of ioctl happens.",
+      "data_structures": ["file", "inode"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "ioctl-device-tty-ioctl",
+          "title": "tty ioctl example — tty_ioctl()",
+          "type": "code",
+          "description": "The tty layer is a canonical example of ioctl usage. tty_ioctl() handles terminal configuration commands such as TCGETS (get termios), TCSETS (set termios), TIOCGWINSZ (get window size), and TIOCSWINSZ (set window size). Each command modifies or queries the tty driver's internal state.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "drivers/tty/tty_ioctl.c",
+            "line": 620,
+            "snippet": "int tty_ioctl(struct inode *inode, struct file *file,\n\t      unsigned int cmd, unsigned long arg)\n{\n  struct tty_struct *tty = file->private_data;\n  int retval;\n\n  switch (cmd) {\n  case TCGETS:\n    retval = copy_to_user((void __user *)arg, &tty->termios,\n\t\t\t  sizeof(struct termios));\n    break;\n  case TCSETS:\n    retval = copy_from_user(&tty->termios, (void __user *)arg,\n\t\t\t    sizeof(struct termios));\n    tty_set_termios(tty, &tty->termios);\n    break;\n  ...\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-device-block-ioctl",
+          "title": "Block device ioctl — blkdev_ioctl()",
+          "type": "code",
+          "description": "Block device ioctls handle commands like BLKGETSIZE (get device size in sectors), BLKSSZGET (get logical block size), BLKFLSBUF (flush buffers), and BLKRRPART (re-read partition table). blkdev_ioctl() validates the request against the block device's capabilities and calls into the block layer or the specific driver's ioctl handler.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "block/ioctl.c",
+            "line": 180,
+            "snippet": "int blkdev_ioctl(struct inode *inode, struct file *file,\n\t\t unsigned cmd, unsigned long arg)\n{\n  struct block_device *bdev = inode->i_bdev;\n  struct gendisk *disk = bdev->bd_disk;\n\n  switch (cmd) {\n  case BLKGETSIZE:\n    return put_user(bdev->bd_inode->i_size >> 9,\n\t\t    (unsigned long __user *)arg);\n  case BLKSSZGET:\n    return put_user(bdev_logical_block_size(bdev),\n\t\t    (int __user *)arg);\n  case BLKFLSBUF:\n    ...\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-device-net-ioctl",
+          "title": "Network device ioctl — sock_ioctl()",
+          "type": "code",
+          "description": "Network-related ioctls are handled through the socket layer. sock_ioctl() processes commands like SIOCGIFADDR (get interface address), SIOCSIFADDR (set interface address), SIOCGIFFLAGS (get interface flags), and SIOCETHTOOL (ethtool operations). These commands manipulate the network device's configuration through the net_device structure.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 890,
+            "snippet": "static long sock_ioctl(struct file *file, unsigned cmd, unsigned long arg)\n{\n  struct socket *sock;\n  int err;\n  ...\n  switch (cmd) {\n  case FIOSETOWN:\n  case SIOCSPGRP:\n    err = -EFAULT;\n    if (get_user(pid, (int __user *)arg))\n      break;\n    f_setown(sock->file, pid, 1);\n    break;\n  case SIOCGIFCONF:\n  case SIOCGIFFLAGS:\n  case SIOCSIFFLAGS:\n    err = dev_ioctl(cmd, (void __user *)arg);\n    break;\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-device-private-data",
+          "title": "file->private_data — driver context",
+          "type": "data",
+          "description": "Device drivers store per-open context in file->private_data during their open method. The ioctl handler retrieves this pointer to access device-specific state. For example, a tty driver stores the tty_struct pointer, while a custom character device might store a driver-specific structure containing hardware registers, DMA buffers, or configuration state.",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 910,
+            "snippet": "struct file {\n  ...\n  void\t\t\t*private_data;\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-data-copy",
+      "title": "Data Copy",
+      "description": "When the ioctl command involves transferring data between user space and kernel space, the device handler uses copy_from_user() to safely read user arguments and copy_to_user() to return results. These functions validate the user pointer, handle page faults gracefully, and use optimized x86 string instructions for the actual copy.",
+      "data_structures": ["task_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "ioctl-data-copy-from-user",
+          "title": "copy_from_user() — user → kernel",
+          "type": "code",
+          "description": "copy_from_user() safely copies data from a user-space pointer into a kernel buffer. It first calls access_ok() to verify the user pointer is in the valid user address range, then performs the copy using optimized x86 string instructions. If a page fault occurs during the copy, it returns the number of uncopied bytes without crashing.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/lib/usercopy_64.c",
+            "line": 46,
+            "snippet": "unsigned long\ncopy_from_user(void *to, const void __user *from, unsigned long n)\n{\n  if (likely(access_ok(VERIFY_READ, from, n)))\n    n = __copy_from_user(to, from, n);\n  return n;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-data-copy-to-user",
+          "title": "copy_to_user() — kernel → user",
+          "type": "code",
+          "description": "copy_to_user() safely copies data from a kernel buffer to a user-space pointer. Like copy_from_user(), it validates the destination pointer with access_ok() before copying. For ioctl commands that return data (e.g., TCGETS, BLKGETSIZE), the driver populates a kernel-side struct and uses copy_to_user() to transfer it to the caller's buffer.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/lib/usercopy_64.c",
+            "line": 35,
+            "snippet": "unsigned long\ncopy_to_user(void __user *to, const void *from, unsigned long n)\n{\n  if (likely(access_ok(VERIFY_WRITE, to, n)))\n    n = __copy_to_user(to, from, n);\n  return n;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-data-put-user",
+          "title": "put_user() / get_user() — scalar values",
+          "type": "code",
+          "description": "For simple scalar values (int, long, pointer), drivers use the lighter-weight put_user() and get_user() macros instead of copy_to_user/copy_from_user. These inline the access_ok check and use a single mov instruction for the transfer, avoiding the overhead of a function call for small data.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/uaccess_64.h",
+            "line": 55,
+            "snippet": "#define put_user(x, ptr) ({\n  __typeof__(*(ptr)) __pus_tmp = x;\n  long __pu_err = -EFAULT;\n  might_sleep();\n  switch (sizeof(*(ptr))) {\n  case 1: __put_user_asm(x, ptr, __pu_err, \"b\"); break;\n  case 2: __put_user_asm(x, ptr, __pu_err, \"w\"); break;\n  case 4: __put_user_asm(x, ptr, __pu_err, \"l\"); break;\n  case 8: __put_user_asm(x, ptr, __pu_err, \"q\"); break;\n  }\n  __pu_err;\n})"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-data-access-ok",
+          "title": "access_ok() — user pointer validation",
+          "type": "code",
+          "description": "access_ok() is the gatekeeper for all user-space memory access. It checks that the user pointer and size fall within the valid user address range (below TASK_SIZE on x86-64, which is 0x00007fffffffffff). This prevents kernel code from accidentally dereferencing kernel addresses that were passed from user space.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/uaccess.h",
+            "line": 45,
+            "snippet": "#define access_ok(type, addr, size) ({\n  __chk_user_ptr(addr);\n  (likely(__range_not_ok(addr, size, TASK_SIZE) == 0));\n})"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-return-path",
+      "title": "Return Path",
+      "description": "The device handler returns an integer result (0 for success, negative errno on error). This propagates back through the VFS layer (do_vfs_ioctl → vfs_ioctl → sys_ioctl), through the syscall return path in entry_64.S, and finally to the user-space caller as the return value of ioctl().",
+      "data_structures": ["task_struct", "file"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "ioctl-return-error-codes",
+          "title": "Common ioctl error codes",
+          "type": "concept",
+          "description": "ioctl() can return several standard error codes: -EBADF (invalid fd), -ENOTTY (fd does not support ioctl, i.e., no unlocked_ioctl handler), -EINVAL (invalid command or argument), -EFAULT (bad user pointer), -ENOMEM (out of memory), -EACCES (permission denied), and -ENODEV (no such device). Drivers may also return custom errors.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-return-syscall-exit",
+          "title": "Syscall return — sysret",
+          "type": "code",
+          "description": "sys_ioctl() returns the result (0 or negative errno) to the syscall dispatch in entry_64.S. The RESTORE_ARGS macro reloads the saved user-space registers, and the sysretq instruction atomically restores %rip, %rflags, and switches back to ring 3. The C library wrapper receives the return value in %rax.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-return-fput",
+          "title": "fput_light() — drop file reference",
+          "type": "code",
+          "description": "Before returning, sys_ioctl() calls fput_light() to drop the reference obtained by fget_light(). If the file table is not shared (the common case), this is a no-op. If shared, it decrements the reference count and may free the struct file if it reaches zero.",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "fs/file_table.c",
+            "line": 355,
+            "snippet": "void fput_light(struct file *file, int fput_needed)\n{\n  if (fput_needed)\n    fput(file);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

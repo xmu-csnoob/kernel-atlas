@@ -1,5 +1,7 @@
 import React from 'react';
-import { color, font, space, radius, motion } from '../design/tokens';
+import { color, font, space, radius, motion, shadow } from '../design/tokens';
+import { useLanguage } from '../i18n/useLanguage';
+import { zh } from '../i18n/zh';
 import type { PlaybackState, PlaybackControls as Controls } from '../hooks/usePlayback';
 
 interface PlaybackControlsProps {
@@ -15,6 +17,8 @@ const PlaybackControls: React.FC<PlaybackControlsProps> = ({
   numSteps,
   stepLabels,
 }) => {
+  const { lang } = useLanguage();
+  const t = zh.playback;
   const isPlaying = state.status === 'playing';
   const atStart = state.currentStep === 0 && !state.isTransitioning;
   const atEnd = state.currentStep === numSteps - 1 && !state.isTransitioning;
@@ -24,11 +28,16 @@ const PlaybackControls: React.FC<PlaybackControlsProps> = ({
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: space[3],
+        flexWrap: 'wrap',
+        gap: `${space[2]} ${space[3]}`,
         padding: `${space[2]} ${space[3]}`,
         background: color.bg.surface,
         borderRadius: radius.lg,
         border: `1px solid ${color.border.subtle}`,
+        boxShadow: shadow.md,
+        position: 'sticky',
+        bottom: space[3],
+        zIndex: 10,
       }}
     >
       <span
@@ -41,20 +50,20 @@ const PlaybackControls: React.FC<PlaybackControlsProps> = ({
           marginRight: space[1],
         }}
       >
-        playback
+        {lang === 'zh' ? t.label : 'playback'}
       </span>
 
       <IconButton
         onClick={controls.stepBackward}
         disabled={atStart}
-        title="Step back"
+        title={lang === 'zh' ? t.stepBackward : 'Step back'}
         label="◂◂"
       />
 
       <IconButton
         onClick={isPlaying ? controls.pause : controls.play}
         primary
-        title={isPlaying ? 'Pause' : 'Play'}
+        title={isPlaying ? (lang === 'zh' ? t.pause : 'Pause') : (lang === 'zh' ? t.play : 'Play')}
         label={isPlaying ? '❚❚' : '▶'}
         wide
       />
@@ -62,13 +71,13 @@ const PlaybackControls: React.FC<PlaybackControlsProps> = ({
       <IconButton
         onClick={controls.stepForward}
         disabled={atEnd}
-        title="Step forward"
+        title={lang === 'zh' ? t.stepForward : 'Step forward'}
         label="▸▸"
       />
 
       <IconButton
         onClick={controls.reset}
-        title="Reset"
+        title={lang === 'zh' ? t.reset : 'Reset'}
         label="⟲"
         disabled={state.status === 'idle'}
       />
@@ -80,8 +89,8 @@ const PlaybackControls: React.FC<PlaybackControlsProps> = ({
           alignItems: 'center',
           gap: space[3],
           marginLeft: space[2],
-          minWidth: '300px',
-          flex: 1,
+          minWidth: '180px',
+          flex: '1 1 200px',
         }}
       >
         <input
@@ -103,8 +112,13 @@ const PlaybackControls: React.FC<PlaybackControlsProps> = ({
             fontSize: font.size.sm,
             color: color.accent.primary,
             minWidth: '160px',
+            flex: '0 1 220px',
             textAlign: 'right',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
           }}
+          title={`[${state.currentStep + 1}/${numSteps}] ${stepLabels[state.currentStep]}`}
         >
           [{state.currentStep + 1}/{numSteps}] {stepLabels[state.currentStep]}
         </span>

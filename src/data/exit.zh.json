@@ -1,0 +1,354 @@
+{
+  "id": "exit",
+  "name": "exit()",
+  "description": "终止调用进程并释放其资源。内核调用 do_exit() 将进程状态设为 TASK_DEAD，释放 mm_struct 和文件描述符，通过 SIGCHLD 通知父进程，并将进程转换为僵尸状态，直到父进程通过 wait4() 回收它。",
+  "signature": "void exit(int status)",
+  "entry_point_file": "kernel/exit.c",
+  "main_flow": [
+    {
+      "id": "exit-user-space",
+      "title": "用户空间 — exit(status) 调用",
+      "description": "用户空间程序调用 exit(status)（或 _exit() / _Exit()），C 库封装函数将状态码放入退出参数，然后执行 syscall 指令陷入内核。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "exit-user-space-glibc",
+          "title": "glibc exit() 封装函数",
+          "description": "glibc 的 exit() 函数执行 atexit 注册的清理处理程序，刷新 stdio 缓冲区，关闭流，然后调用 _exit() 系统调用（x86-64 上 NR_exit_group = 231）进入内核。状态参数（0-255）通过 %rdi 寄存器传递。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-user-space-syscall",
+          "title": "SYSCALL_DEFINE1(exit_group, int, error_code)",
+          "description": "exit_group 系统调用终止进程组中的所有线程。在 x86-64 上，系统调用号 231 放入 %rax，退出状态通过 %rdi 传递。syscall 指令陷入内核入口点。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 1025,
+            "snippet": "SYSCALL_DEFINE1(exit_group, int, error_code)\n{\n  do_group_exit((error_code & 0xff) << 8);\n}\nEXPORT_SYMBOL(exit_group);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-user-space-do-group-exit",
+          "title": "do_group_exit() — 向所有线程发送信号",
+          "description": "do_group_exit() 通过 zap_other_threads() 向线程组中的其他所有线程发送 SIGKILL，然后当前线程继续执行 do_exit()。这确保整个进程组一起终止。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 987,
+            "snippet": "void do_group_exit(int exit_code)\n{\n  struct signal_struct *sig = current->signal;\n  BUG_ON(exit_code & 0x80);\n\n  if (signal_group_exit(sig))\n    exit_code = sig->group_exit_code;\n  else if (!thread_group_empty(current)) {\n    struct signal_struct *const sig = current->signal;\n    struct sighand_struct *const sighand = current->sighand;\n    spin_lock_irq(&sighand->siglock);\n    if (signal_group_exit(sig))\n      exit_code = sig->group_exit_code;\n    else {\n      sig->group_exit_code = exit_code;\n      zap_other_threads(current);\n    }\n    spin_unlock_irq(&sighand->siglock);\n  }\n  do_exit(exit_code);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-kernel-entry",
+      "title": "内核入口 — do_exit()",
+      "description": "do_exit() 是内核中进程终止的核心函数。它将进程状态设为 PF_EXITING，禁用抢占，并按严格顺序开始释放所有进程资源。",
+      "data_structures": ["task_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "exit-do-exit-entry",
+          "title": "do_exit() 入口",
+          "description": "kernel/exit.c 中的 do_exit() 是进程终止的核心函数。它首先在任务标志上设置 PF_EXITING 以防止信号投递，然后调用 exit_mm() 释放内存描述符，接着调用 exit_files() 关闭文件描述符，再调用 exit_fs() 释放文件系统资源。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 927,
+            "snippet": "NORET_TYPE void do_exit(long code)\n{\n  struct task_struct *tsk = current;\n  int group_dead;\n\n  profile_task_exit(tsk);\n\n  WARN_ON(atomic_read(&tsk->fs_excl));\n\n  if (unlikely(in_interrupt()))\n    panic(\"Aiee, killing interrupt handler!\");\n  if (unlikely(!tsk->pid))\n    panic(\"Attempted to kill the idle task!\");\n\n  exit_signals(tsk);\n  tsk->flags |= PF_EXITING;\n  exit_io_context(tsk);\n\n  group_dead = atomic_dec_and_test(&tsk->signal->live);\n  if (group_dead) {\n    acct_process(code);\n    exit_sem(tsk);\n  }\n  __exit_fs(tsk);\n  exit_files(tsk);\n  exit_fs(tsk);\n  exit_namespace(tsk);\n  exit_thread();\n  cpuset_exit(tsk);\n  exit_keys(tsk);\n\n  if (group_dead && tsk->signal->leader)\n    disassociate_ctty(1);\n  module_put(tsk->real_cred->user_ns->owner);\n\n  profile_handoff_task(tsk);\n  debug_check_no_locks_held(tsk);\n  tsk->flags |= PF_EXITPIDONE;\n\n  if (group_dead) {\n    hrtimer_cancel(&tsk->signal->real_timer);\n    exit_itimers(tsk->signal);\n    exit_posix_timers(tsk);\n  }\n\n  exit_mm(tsk);\n\n  if (group_dead)\n    acct_update_integrals(tsk);\n  update_rusage(tsk, RUSAGE_CHILDREN);\n  tsk->exit_code = code;\n  set_task_state(tsk, TASK_DEAD);\n  schedule();\n  BUG();\n  for (;;)\n    ;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-exit-signals",
+          "title": "exit_signals() — 阻塞所有信号投递",
+          "description": "exit_signals() 将任务阻塞的信号掩码设为阻塞所有信号，清除待处理信号，并阻止任何新信号投递到正在终止的进程。这确保了干净终止而不受中断。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 841,
+            "snippet": "static void exit_signals(struct task_struct *tsk)\n{\n  int group_stop = 0;\n  struct signal_struct *sig = tsk->signal;\n\n  if (thread_group_empty(tsk) || signal_group_exit(sig)) {\n    tsk->flags |= PF_EXITING;\n    if (thread_group_leader(tsk)) {\n      sig->group_exit_code = tsk->exit_code;\n      group_stop = tracehook_notify_death(tsk, &group_exit_code, NULL);\n    }\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-pf-exiting",
+          "title": "PF_EXITING 标志",
+          "description": "task_struct->flags 中的 PF_EXITING 标志标记进程正在退出过程中。一旦设置，调度器将不会迁移此任务，信号投递被阻塞，futex 操作被短路。",
+          "type": "data",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-mm-release",
+      "title": "内存释放 — exit_mm() → mmput() → 释放 mm_struct",
+      "description": "exit_mm() 释放进程的内存描述符。它将 mm_struct 从任务中分离，通过 mmput() 递减其引用计数，当计数归零时，释放所有页表、VMA 和 mm_struct 本身。",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "exit-exit-mm",
+          "title": "exit_mm() — 从任务分离 mm_struct",
+          "description": "kernel/exit.c 中的 exit_mm() 将 task->mm 设为 NULL（任务不再拥有地址空间），然后调用 mmput() 递减 mm_struct 引用计数。如果这是最后一个引用，mmput() 触发完整的内存拆除。",
+          "type": "code",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 456,
+            "snippet": "void exit_mm(struct task_struct * tsk)\n{\n  struct mm_struct *mm = tsk->mm;\n\n  mm_release(tsk, mm);\n  if (!mm)\n    return;\n  down_read(&mm->mmap_sem);\n  if (mm->core_state) {\n    up_read(&mm->mmap_sem);\n    return;\n  }\n  BUG_ON(mm != tsk->active_mm);\n  tsk->mm = NULL;\n  tsk->active_mm = NULL;\n  up_read(&mm->mmap_sem);\n  enter_lazy_tlb(mm, tsk);\n  mmput(mm);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-mmput",
+          "title": "mmput() — 递减 mm 引用计数",
+          "description": "mmput() 递减 mm_struct 的 mm_users 计数。当计数归零时，调用 exit_mmap() 拆除所有 VMA 和页表，然后调用 mmdrop() 释放 mm_struct 本身。",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 383,
+            "snippet": "void mmput(struct mm_struct *mm)\n{\n  might_sleep();\n\n  if (atomic_dec_and_test(&mm->mm_users)) {\n    uprobe_clear_state(mm);\n    exit_aio(mm);\n    ksm_exit(mm);\n    khugepaged_exit(mm);\n    exit_mmap(mm);\n    set_mm_exe_file(mm, NULL);\n    if (!list_empty(&mm->mmlist)) {\n      spin_lock(&mmlist_lock);\n      list_del(&mm->mmlist);\n      spin_unlock(&mmlist_lock);\n    }\n    put_swap_token(mm);\n    mmdrop(mm);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-exit-mmap",
+          "title": "exit_mmap() — 释放所有 VMA 和页表",
+          "description": "exit_mmap() 遍历 mm 中的所有 vm_area_struct 条目，取消映射每个区域（释放页表项并递减页引用计数），并释放 VMA 结构。这是内存清理的主要部分。",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 2402,
+            "snippet": "void exit_mmap(struct mm_struct *mm)\n{\n  struct mmu_gather tlb;\n  struct vm_area_struct *vma;\n  unsigned long nr_accounted = 0;\n  unsigned long end;\n\n  lru_add_drain();\n  spin_lock(&mm->page_table_lock);\n  tlb_gather_mmu(&tlb, mm, 0, -1);\n  end = unmap_vmas(&tlb, mm, mm->mmap, 0,\n      TASK_SIZE, &nr_accounted, NULL);\n  vma = mm->mmap;\n  mm->mmap = NULL;\n  mm->mm_rb = RB_ROOT;\n  mm->mmap_cache = NULL;\n  calc_vm_flags(mm);\n  spin_unlock(&mm->page_table_lock);\n  flush_tlb_mm(mm);\n\n  while (vma) {\n    struct vm_area_struct *next = vma->vm_next;\n    remove_vma(vma);\n    vma = next;\n  }\n  lru_add_drain();\n  tlb_finish_mmu(&tlb, 0, end);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-fd-cleanup",
+      "title": "文件描述符清理 — exit_files() → put_files_struct()",
+      "description": "exit_files() 通过递减 files_struct 的引用计数来关闭所有打开的文件描述符。当计数归零时，put_files_struct() 遍历 fdtable，对每个打开的文件调用 filp_close() 以释放 inode、dentry 和文件系统资源。",
+      "data_structures": ["task_struct", "files_struct", "file"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "exit-exit-files",
+          "title": "exit_files() — 释放文件描述符表",
+          "description": "exit_files() 将 task->files 设为 NULL 并递减 files_struct 引用计数。如果这是最后一个引用，则触发所有打开文件描述符的完整清理。",
+          "type": "code",
+          "data_structures": ["task_struct", "files_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 520,
+            "snippet": "void exit_files(struct task_struct *tsk)\n{\n  struct files_struct * files = tsk->files;\n\n  if (files) {\n    task_lock(tsk);\n    tsk->files = NULL;\n    task_unlock(tsk);\n    put_files_struct(files);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-put-files-struct",
+          "title": "put_files_struct() — 关闭所有打开的 fd",
+          "description": "put_files_struct() 递减 files_struct 引用计数。当计数归零时，遍历 fdtable，对每个打开的文件描述符调用 filp_close()，释放 struct file，递减 inode 和 dentry 引用计数，并调用文件系统的 release 方法。",
+          "type": "code",
+          "data_structures": ["files_struct", "file"],
+          "source_ref": {
+            "file": "fs/file.c",
+            "line": 376,
+            "snippet": "void put_files_struct(struct files_struct *files)\n{\n  struct fdtable *fdt;\n\n  if (atomic_dec_and_test(&files->count)) {\n    close_files(files);\n    fdt = files_fdtable(files);\n    if (fdt != &files->fdtab)\n      __free_fdtable(fdt);\n    kmem_cache_free(files_cachep, files);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-close-files",
+          "title": "close_files() — filp_close 循环",
+          "description": "close_files() 遍历 fdtable 中的所有文件描述符。对每个非 NULL 条目调用 filp_close()，调用文件的 f_op->release 方法，递减 f_count，当计数为零时释放 struct file 及其关联的 dentry 和 inode。",
+          "type": "code",
+          "data_structures": ["files_struct", "file"],
+          "source_ref": {
+            "file": "fs/file.c",
+            "line": 359,
+            "snippet": "static void close_files(struct files_struct * files)\n{\n  int i, j;\n  struct fdtable *fdt;\n\n  j = 0;\n\n  fdt = files_fdtable(files);\n  for (;;) {\n    unsigned long set;\n    i = j * BITS_PER_LONG;\n    if (i >= fdt->max_fds)\n      break;\n    set = fdt->open_fds->fds_bits[j++];\n    while (set) {\n      if (set & 1) {\n        struct file * file = xchg(&fdt->fd[i], NULL);\n        if (file) {\n          filp_close(file, files);\n        }\n      }\n      i++;\n      set >>= 1;\n    }\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-signal-parent",
+      "title": "通知父进程 — do_notify_parent() → wake_up_parent()",
+      "description": "在成为僵尸之前，退出进程通过发送 SIGCHLD 通知其父进程。do_notify_parent() 投递信号，在父进程的信号信息中设置子进程的退出码，如果父进程正在 wait4() 中等待，则唤醒父进程。",
+      "data_structures": ["task_struct", "signal_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "exit-do-notify-parent",
+          "title": "do_notify_parent() — 向父进程发送 SIGCHLD",
+          "description": "do_notify_parent() 向父进程发送 SIGCHLD 信号并携带子进程的退出状态。如果父进程设置了 SA_NOCLDSTOP 或 SA_NOCLDWAIT，则相应调整行为。信号包含子进程的 PID 和退出码。",
+          "type": "code",
+          "data_structures": ["task_struct", "signal_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 727,
+            "snippet": "static void do_notify_parent(struct task_struct *tsk, int sig)\n{\n  struct siginfo info;\n  unsigned long flags;\n  struct sighand_struct *sighand;\n\n  BUG_ON(sig == -1);\n  BUG_ON(task_is_stopped_or_traced(tsk));\n\n  info.si_signo = sig;\n  info.si_errno = 0;\n  info.si_code = CLD_EXITED;\n  info.si_pid = task_pid_nr_ns(tsk, tsk->parent->nsproxy->pid_ns);\n  info.si_uid = task_uid(tsk);\n  info.si_status = tsk->exit_code >> 8;\n  info.si_utime = cputime_to_clock_t(tsk->utime);\n  info.si_stime = cputime_to_clock_t(tsk->stime);\n\n  sighand = tsk->parent->sighand;\n  spin_lock_irqsave(&sighand->siglock, flags);\n  if (sighand->action[SIGCHLD-1].sa.sa_handler == SIG_IGN ||\n      (sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDWAIT))\n    tsk->exit_signal = -1;\n  if (sigismember(&sighand->action[SIGCHLD-1].sa.sa_mask, sig))\n    sig = SIGCHLD;\n  __group_send_sig_info(sig, &info, tsk->parent);\n  spin_unlock_irqrestore(&sighand->siglock, flags);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-wake-up-parent",
+          "title": "wake_up_parent() — 解除 wait4() 调用者的阻塞",
+          "description": "发送 SIGCHLD 后，如果父进程正在 wait 系列系统调用（wait4、waitpid、waitid）中睡眠，内核唤醒父进程。父进程随后可以回收子进程的退出状态并释放剩余的 task_struct。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 800,
+            "snippet": "static void wake_up_parent(struct task_struct *parent, struct task_struct *child)\n{\n  wake_up_interruptible(&parent->signal->wait_chldexit);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-sigchld-info",
+          "title": "struct siginfo — 退出状态载荷",
+          "description": "siginfo 结构将子进程的退出信息传递给父进程：si_pid（子进程 PID）、si_status（退出码）、si_utime/si_stime（CPU 时间）和 si_code（正常退出为 CLD_EXITED，信号终止为 CLD_KILLED）。",
+          "type": "data",
+          "data_structures": ["signal_struct"],
+          "source_ref": {
+            "file": "include/asm-generic/siginfo.h",
+            "line": 48,
+            "snippet": "typedef struct siginfo {\n  int si_signo;\n  int si_errno;\n  int si_code;\n\n  union {\n    int _pad[SI_PAD_SIZE];\n\n    struct {\n      pid_t _pid;\n      __ARCH_SI_UID_T _uid;\n    } _kill;\n\n    struct {\n      unsigned int _timer1;\n      unsigned int _timer2;\n    } _timer;\n\n    struct {\n      pid_t _pid;\n      int _status;\n      clock_t _utime;\n      clock_t _stime;\n    } _sigchld;\n  } _sifields;\n} siginfo_t;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-zombie",
+      "title": "僵尸 — release_task() → zap_pid_ns_processes()",
+      "description": "do_exit() 将任务状态设为 TASK_DEAD 后，进程变为僵尸。它保留 task_struct 和 PID 直到父进程调用 wait4()。如果父进程先退出，init（PID 1）继承该子进程并将其回收。",
+      "data_structures": ["task_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "exit-release-task",
+          "title": "release_task() — 从 wait4() 路径调用",
+          "description": "当父进程通过 wait4() 回收子进程时调用 release_task()。它将僵尸从任务列表中分离，通过 free_pid() 释放 PID，递减父进程 signal_struct 的 live 计数，最后通过 free_task() 释放 task_struct。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 150,
+            "snippet": "void release_task(struct task_struct * p)\n{\n  struct task_struct *leader;\n  int zap_leader;\nrepeat:\n  tracehook_prepare_release_task(p);\n  if (unlikely(tsk->flags & PF_EXITING))\n    return;\n\n  write_lock_irq(&tasklist_lock);\n  if (unlikely(p->ptrace)) {\n    __ptrace_unlink(p);\n    if (p->exit_state != EXIT_ZOMBIE) {\n      __ptrace_unlink(p);\n      goto repeat;\n    }\n  }\n\n  __exit_signal(p);\n\n  leader = p->group_leader;\n  if (leader != p && thread_group_empty(leader)\n      && leader->exit_state == EXIT_ZOMBIE) {\n    p = leader;\n    goto repeat;\n  }\n\n  zap_leader = (leader != p && thread_group_empty(leader));\n  write_unlock_irq(&tasklist_lock);\n  release_thread(p);\n  tracehook_report_death(p, &cookie, zap_leader);\n  put_task_struct(p);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-zap-pid-ns",
+          "title": "zap_pid_ns_processes() — PID 命名空间清理",
+          "description": "当 PID 命名空间被销毁时，zap_pid_ns_processes() 遍历命名空间中所有剩余的进程并强制它们退出。这确保容器或命名空间被拆除时没有遗留的 PID。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid_namespace.c",
+            "line": 170,
+            "snippet": "void zap_pid_ns_processes(struct pid_namespace *pid_ns)\n{\n  int nr;\n  int rc;\n  struct task_struct *task, *me = current;\n\n  rc = me->signal->group_exit_code;\n  pid_ns->nr_hashed = PIDMAP_ENTRIES;\n\n  read_lock(&tasklist_lock);\n  nr = next_pidmap(pid_ns, 1);\n  while (nr > 0) {\n    rcu_read_lock();\n    task = pid_task(find_vpid(nr), PIDTYPE_PID);\n    if (task)\n      send_sig_info(SIGKILL, SEND_SIG_FORCED, task);\n    rcu_read_unlock();\n    nr = next_pidmap(pid_ns, nr);\n  }\n  read_unlock(&tasklist_lock);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-free-pid",
+          "title": "free_pid() — 将 PID 归还位图",
+          "description": "free_pid() 将 PID 编号归还到 pidmap 位图，以便将来的进程可以重用。同时递减 struct pid 的引用计数，当最后一个引用被释放时释放该结构。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid.c",
+            "line": 296,
+            "snippet": "void free_pid(struct pid *pid)\n{\n  int i;\n  unsigned long flags;\n\n  spin_lock_irqsave(&pidmap_lock, flags);\n  for (i = 0; i < pid->level; i++) {\n    struct upid *upid = pid->numbers + i;\n    pidmap_dealloc(upid->nr, upid->ns);\n  }\n  spin_unlock_irqrestore(&pidmap_lock, flags);\n\n  kmem_cache_free(pid_cachep, pid);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-reaped",
+      "title": "回收 — wait4() → release_task() → task_struct 释放",
+      "description": "父进程调用 wait4()（或 waitpid/wait）收集子进程的退出状态。内核找到僵尸子进程，将其退出码复制到用户空间，调用 release_task() 释放 task_struct 和 PID，并将子进程的 PID 返回给父进程。",
+      "data_structures": ["task_struct"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "exit-wait4",
+          "title": "wait4() — 父进程回收子进程",
+          "description": "wait4() 遍历父进程的子进程列表寻找僵尸（EXIT_ZOMBIE）子进程。找到后，将退出状态复制到用户提供的 status 指针，记录资源使用情况（rusage），并调用 release_task() 释放子进程的 task_struct。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 1628,
+            "snippet": "SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,\n    int, options, struct rusage __user *, ru)\n{\n  struct wait_opts wo;\n  struct pid *pid = NULL;\n  enum pid_type type;\n  long ret;\n\n  if (options & ~(WNOHANG|WUNTRACED|WCONTINUED|\n      __WNOTHREAD|__WCLONE|__WALL))\n    return -EINVAL;\n\n  if (upid == -1)\n    type = PIDTYPE_MAX;\n  else if (upid < 0) {\n    type = PIDTYPE_PGID;\n    pid = find_get_pid(-upid);\n  } else if (upid == 0) {\n    type = PIDTYPE_PGID;\n    pid = find_get_pid(task_pgrp_nr(current));\n  } else {\n    type = PIDTYPE_PID;\n    pid = find_get_pid(upid);\n  }\n\n  wo.wo_type = type;\n  wo.wo_pid = pid;\n  wo.wo_options = options;\n  wo.wo_stat_addr = stat_addr;\n  wo.wo_rusage_addr = ru;\n  ret = do_wait(&wo);\n  put_pid(pid);\n  return ret;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-do-wait",
+          "title": "do_wait() — 查找并回收僵尸子进程",
+          "description": "do_wait() 在 tasklist_lock 下遍历子进程和兄弟进程列表，寻找 EXIT_ZOMBIE 状态的子进程。找到后收集退出状态并调用 release_task()。如果没有找到僵尸进程且未设置 WNOHANG，则在 wait_chldexit 等待队列上睡眠，直到有子进程退出。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 1530,
+            "snippet": "static long do_wait(struct wait_opts *wo)\n{\n  struct task_struct *tsk;\n  int flag;\n  pid_t pid;\n\n  repeat:\n  flag = 0;\n  list_for_each_entry(tsk, &current->children, sibling) {\n    int ret;\n    pid = task_pid_nr_ns(tsk, current->nsproxy->pid_ns);\n    ret = eligible_child(wo, tsk);\n    if (!ret)\n      continue;\n    switch (ret) {\n    case ERR_PTR(-EAGAIN):\n      flag = 1;\n      continue;\n    case ERR_PTR(-ECHILD):\n      goto notask;\n    }\n    if (tsk->exit_state == EXIT_ZOMBIE) {\n      if (!likely(wo->wo_options & WEXITED))\n        continue;\n      pid = wo->wo_stat_addr ?\n        tsk->exit_code : 0;\n      if (likely(!wo->wo_stat_addr ||\n          !put_user(pid, wo->wo_stat_addr))) {\n        if (wo->wo_rusage_addr)\n          getrusage(tsk, RUSAGE_BOTH,\n              wo->wo_rusage_addr);\n        if (!wo->wo_pid || type != PIDTYPE_PID ||\n            wo->wo_pid == pid) {\n          release_task(tsk);\n          return pid;\n        }\n      }\n    }\n  }\nnotask:\n  if (flag) {\n    pid = 0;\n    if (wo->wo_options & WNOHANG)\n      return 0;\n    retval = -ERESTARTSYS;\n    if (signal_pending(current))\n      goto end;\n    __set_current_state(TASK_INTERRUPTIBLE);\n    schedule();\n    goto repeat;\n  }\nend:\n  return pid;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-init-reaper",
+          "title": "init (PID 1) — 终极回收者",
+          "description": "如果父进程在其子进程之前退出，子进程会被重新归属到 init（PID 1）。init 定期调用 wait4(-1, ...) 回收任何孤儿进程，防止僵尸进程在系统上累积。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

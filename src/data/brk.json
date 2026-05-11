@@ -1,0 +1,318 @@
+{
+  "id": "brk",
+  "name": "brk()",
+  "description": "Changes the program break (end of the heap segment) to a new address. The kernel validates the requested address against the heap boundary, updates or creates the VMA for the heap region, and if expanding, allocates physical page frames and updates page tables.",
+  "signature": "int brk(void *addr)",
+  "entry_point_file": "mm/mmap.c",
+  "main_flow": [
+    {
+      "id": "brk-user-space",
+      "title": "User Space — brk(addr) via glibc",
+      "description": "The user-space program calls brk(addr) or sbrk(increment) via the C library. glibc's sbrk() wrapper computes the new break address from the current one and issues the brk syscall. The requested address must be page-aligned for the kernel to accept it.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "brk-user-space-glibc",
+          "title": "glibc brk() / sbrk() wrapper",
+          "description": "The glibc brk() wrapper places the requested address in %rdi and the syscall number (NR_brk = 12 on x86-64) in %rax, then executes syscall. sbrk(increment) is a convenience wrapper that reads the current break from an internal variable, adds the increment, and calls brk().",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-user-space-heap-layout",
+          "title": "Process address space layout",
+          "description": "The heap sits between the program's BSS/data segments (low address) and the mmap region (growing down from high addresses). The program break marks the top of the heap. brk() can shrink the heap (addr < current brk) or grow it (addr > current brk).",
+          "type": "concept",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-user-space-syscall",
+          "title": "syscall instruction — trap to kernel",
+          "description": "The syscall instruction saves %rip and %rflags, switches to ring 0, and jumps to the system_call entry point. %rax = 12 selects sys_brk from the syscall table.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-kernel-entry",
+      "title": "Kernel Entry — sys_brk()",
+      "description": "sys_brk() in mm/mmap.c receives the requested break address. It first rounds the address to a page boundary, then calls the core do_brk() logic to validate and adjust the heap VMA.",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "brk-sys-brk",
+          "title": "SYSCALL_DEFINE1(brk, unsigned long, brk)",
+          "description": "sys_brk() is the system call entry point. It calls mm->brk to get the current break, then invokes the core logic to set the new break. The returned value is the new program break on success, or the current break on failure.",
+          "type": "code",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 290,
+            "snippet": "SYSCALL_DEFINE1(brk, unsigned long, brk)\n{\n  unsigned long rlim, retval;\n  unsigned long newbrk, oldbrk;\n  struct mm_struct *mm = current->mm;\n\n  down_write(&mm->mmap_sem);\n  if (brk < mm->end_code)\n    goto out;\n  newbrk = PAGE_ALIGN(brk);\n  oldbrk = PAGE_ALIGN(mm->brk);\n  if (oldbrk == newbrk)\n    goto set_brk;\n\n  /* Always allow shrinking brk. */\n  if (brk <= mm->brk) {\n    if (!do_munmap(mm, newbrk, oldbrk - newbrk))\n      goto set_brk;\n    goto out;\n  }\n\n  /* Check against rlimit */\n  rlim = rlimit(RLIMIT_DATA);\n  if (rlim < RLIM_INFINITY && brk - mm->start_data > rlim)\n    goto out;\n\n  /* Check against existing mappings */\n  if (!find_vma_intersection(mm, oldbrk, newbrk + PAGE_SIZE))\n    if (!do_brk(oldbrk, newbrk - oldbrk))\n      goto set_brk;\nout:\n  retval = mm->brk;\n  up_write(&mm->mmap_sem);\n  return retval;\nset_brk:\n  mm->brk = brk;\n  mm->brk_page = newbrk;\n  retval = brk;\n  up_write(&mm->mmap_sem);\n  return retval;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-mmap-sem",
+          "title": "down_write(&mm->mmap_sem) — exclusive lock",
+          "description": "sys_brk() takes the mmap_sem write lock to serialize all VMA modifications. This prevents concurrent mmap/munmap/brk operations from corrupting the VMA tree.",
+          "type": "data",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-page-align",
+          "title": "PAGE_ALIGN() — round to page boundary",
+          "description": "PAGE_ALIGN(addr) rounds the address up to the nearest page boundary (typically 4KB on x86). The kernel only manages memory at page granularity, so partial-page break addresses are rounded.",
+          "type": "concept",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-heap-check",
+      "title": "Heap Boundary Check — mm->brk vs limits",
+      "description": "The kernel validates the requested break address against multiple limits: it must not shrink below the end of the code segment, it must not exceed the RLIMIT_DATA soft limit, and it must not collide with existing mmap regions.",
+      "data_structures": ["mm_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "brk-check-end-code",
+          "title": "brk >= mm->end_code",
+          "description": "The break address must not fall below the end of the program's code segment (mm->end_code). This protects the text and data sections from being overwritten by heap shrinkage.",
+          "type": "data",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-check-rlimit",
+          "title": "RLIMIT_DATA check",
+          "description": "The kernel checks brk - mm->start_data against RLIMIT_DATA (the per-process data segment size limit). If the requested heap size exceeds this limit, the brk() call fails with the current break returned unchanged.",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 308,
+            "snippet": "rlim = rlimit(RLIMIT_DATA);\nif (rlim < RLIM_INFINITY && brk - mm->start_data > rlim)\n  goto out;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-check-intersection",
+          "title": "find_vma_intersection() — avoid mmap collision",
+          "description": "When expanding the heap, the kernel uses find_vma_intersection() to check if any existing VMA overlaps with the [oldbrk, newbrk] range. If there's a collision, the brk() fails.",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 314,
+            "snippet": "if (!find_vma_intersection(mm, oldbrk, newbrk + PAGE_SIZE))\n  if (!do_brk(oldbrk, newbrk - oldbrk))\n    goto set_brk;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-vma-update",
+      "title": "VMA Update — do_brk() → expand or create VMA",
+      "description": "do_brk() handles the actual VMA manipulation. If the heap VMA can be expanded in place (adjacent to the existing heap), it extends the vm_end field. Otherwise, it creates a new anonymous VMA for the heap region.",
+      "data_structures": ["mm_struct", "vm_area_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "brk-do-brk",
+          "title": "do_brk() — core heap expansion",
+          "description": "do_brk() in mm/mmap.c is the core function for heap expansion. It finds the VMA at the old break address and attempts to expand it. If expansion fails, it allocates a new anonymous VMA.",
+          "type": "code",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 230,
+            "snippet": "int do_brk(unsigned long addr, unsigned long len)\n{\n  struct mm_struct *mm = current->mm;\n  struct vm_area_struct *vma, *prev;\n  unsigned long flags;\n  struct rb_node **rb_link, *rb_parent;\n\n  len = PAGE_ALIGN(len);\n  if (!len)\n    return addr;\n\n  if ((addr + len) > TASK_SIZE || (addr + len) < addr)\n    return -EINVAL;\n\n  flags = VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;\n\n  if (find_vma_links(mm, addr, addr + len, &prev, &rb_link, &rb_parent))\n    return -ENOMEM;\n\n  vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);\n  if (!vma)\n    return -ENOMEM;\n\n  vma->vm_mm = mm;\n  vma->vm_start = addr;\n  vma->vm_end = addr + len;\n  vma->vm_flags = flags;\n  vma->vm_page_prot = vm_get_page_prot(flags);\n  vma_link(mm, vma, prev, rb_link, rb_parent);\n  return 0;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-vma-merge",
+          "title": "vma_merge() — coalesce adjacent VMAs",
+          "description": "If the heap expansion is adjacent to an existing anonymous VMA with compatible flags, vma_merge() coalesces them into a single VMA. This reduces VMA list fragmentation and improves performance.",
+          "type": "code",
+          "data_structures": ["vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 520,
+            "snippet": "struct vm_area_struct *vma_merge(struct mm_struct *mm,\n    struct vm_area_struct *prev, unsigned long addr,\n    unsigned long end, unsigned long vm_flags,\n    struct anon_vma *anon_vma, struct file *file,\n    pgoff_t pgoff, struct mempolicy *policy)\n{\n  pgoff_t pglen = (end - addr) >> PAGE_SHIFT;\n  struct vm_area_struct *area, *next;\n\n  if (!prev)\n    prev = find_vma(mm, addr);\n  if (prev && prev->vm_end == addr) {\n    area = prev;\n    if (can_vma_merge_after(area, vm_flags,\n        anon_vma, file, pgoff)) {\n      /* ... */\n    }\n  }\n  /* ... */\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-vm-flags",
+          "title": "VMA flags for heap: VM_READ | VM_WRITE",
+          "description": "The heap VMA is created with VM_READ | VM_WRITE flags, making it a read-write anonymous mapping. VM_ACCOUNT is also set so the kernel tracks the memory against the process's commit limit for OOM accounting.",
+          "type": "data",
+          "data_structures": ["vm_area_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-page-alloc",
+      "title": "Page Allocation — demand-zero allocation on first touch",
+      "description": "brk() itself does not allocate physical pages — it only updates the VMA boundaries. Physical page frames are allocated on demand when the process first writes to a newly expanded heap page, triggering a page fault handler.",
+      "data_structures": ["mm_struct", "page"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "brk-page-fault",
+          "title": "do_page_fault() — first touch allocates pages",
+          "description": "When the process writes to an address in the expanded heap region, the MMU raises a page fault (since no PTE exists yet). The do_page_fault() handler in arch/x86/mm/fault.c calls handle_mm_fault() to allocate a physical page and set up the page table entry.",
+          "type": "code",
+          "data_structures": ["mm_struct", "page"],
+          "source_ref": {
+            "file": "arch/x86/mm/fault.c",
+            "line": 680,
+            "snippet": "static void __kprobes do_page_fault(struct pt_regs *regs,\n    unsigned long error_code)\n{\n  struct vm_area_struct *vma;\n  unsigned long address;\n  struct mm_struct *mm;\n  int write, fault;\n\n  address = read_cr2();\n  mm = current->mm;\n  /* ... */\n  vma = find_vma(mm, address);\n  if (!vma)\n    goto bad_area;\n  /* ... */\n  fault = handle_mm_fault(mm, vma, address, write);\n  /* ... */\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-alloc-page",
+          "title": "alloc_page() — get a zeroed physical page",
+          "description": "handle_mm_fault() → __do_fault() → alloc_page(GFP_HIGHUSER) allocates a physical page frame. For anonymous heap pages, the page is zero-filled before being mapped into the process's address space (COW semantics for fork, zero-fill for brk expansion).",
+          "type": "code",
+          "data_structures": ["page"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2650,
+            "snippet": "static int __do_fault(struct mm_struct *mm,\n    struct vm_area_struct *vma,\n    unsigned long address, pmd_t *pmd,\n    pgoff_t pgoff, unsigned int flags,\n    pte_t orig_pte)\n{\n  struct page *page;\n  /* ... */\n  page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, address);\n  if (!page)\n    return VM_FAULT_OOM;\n  clear_user_highpage(page, address);\n  /* ... */\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-zero-page",
+          "title": "Zero-fill guarantee for heap pages",
+          "description": "The kernel guarantees that newly allocated heap pages are zero-filled. This prevents information leakage between processes — a process cannot read data left behind by a previous owner of the physical page frame.",
+          "type": "concept",
+          "data_structures": ["page"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-tlb-update",
+      "title": "TLB / PTE Update — map virtual to physical",
+      "description": "After allocating a physical page, the kernel establishes the virtual-to-physical mapping by writing the page table entry (PTE) and flushing the TLB so the CPU's address translation cache sees the new mapping.",
+      "data_structures": ["mm_struct", "page"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "brk-set-pte",
+          "title": "set_pte_at() — write page table entry",
+          "description": "set_pte_at() writes the PTE that maps the virtual address to the physical page frame. The PTE includes permission bits (read/write), the present bit, the dirty bit, and the physical page frame number (PFN).",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/pgtable.h",
+            "line": 315,
+            "snippet": "static inline void set_pte_at(struct mm_struct *mm,\n    unsigned long addr, pte_t *ptep, pte_t pte)\n{\n  native_set_pte(ptep, pte);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-flush-tlb",
+          "title": "flush_tlb_page() / __flush_tlb_one() — invalidate TLB",
+          "description": "After modifying a PTE, the kernel must invalidate the corresponding TLB entry. On x86, this is done by invlpg instruction (invoked via __flush_tlb_one()), which invalidates the TLB entry for a single virtual address.",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/tlbflush.h",
+            "line": 52,
+            "snippet": "static inline void __flush_tlb_one(unsigned long addr)\n{\n  __native_flush_tlb_single(addr);\n}\n\nstatic inline void native_flush_tlb_single(unsigned long addr)\n{\n  asm volatile(\"invlpg (%0)\" :: \"r\" (addr) : \"memory\");\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-pte-bits",
+          "title": "PTE flags: _PAGE_PRESENT | _PAGE_RW | _PAGE_USER",
+          "description": "The PTE for a heap page contains: _PAGE_PRESENT (page is in RAM), _PAGE_RW (read-write access), _PAGE_USER (user-mode accessible), _PAGE_ACCESSED (CPU has accessed), and _PAGE_DIRTY (CPU has written).",
+          "type": "data",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-return-path",
+      "title": "Return Path — new brk value in %rax",
+      "description": "sys_brk() returns the new program break address on success, or the current (unchanged) break on failure. The glibc wrapper updates its internal record of the break and returns 0 on success, -1 on failure with errno set.",
+      "data_structures": ["task_struct"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "brk-return-value",
+          "title": "Return value semantics",
+          "description": "On success, sys_brk() returns the new break address (same as the requested addr). On failure (e.g., RLIMIT exceeded, VMA collision), it returns the old break address. glibc's brk() wrapper translates this: if retval < requested_addr, it returns -1 and sets errno = ENOMEM.",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-sysret",
+          "title": "sysretq — return to user space",
+          "description": "After sys_brk() completes, the syscall exit path restores user-space registers from the stack frame, switches to ring 3, and returns control to the instruction after syscall in the glibc wrapper.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-glibc-update",
+          "title": "glibc internal __curbrk update",
+          "description": "glibc maintains a global variable __curbrk that tracks the current program break. After a successful brk() call, glibc updates this variable. sbrk() uses __curbrk to compute the next break address for subsequent calls.",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

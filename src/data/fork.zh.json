@@ -1,0 +1,325 @@
+{
+  "id": "fork",
+  "name": "fork()",
+  "description": "通过复制调用进程来创建一个新进程。子进程是父进程的精确副本，共享写时复制页表，复制文件描述符和信号处理程序。内核分配新的task_struct、pid和内核栈，然后将子进程集成到调度器的运行队列中。",
+  "signature": "pid_t fork(void)",
+  "entry_point_file": "kernel/fork.c",
+  "main_flow": [
+    {
+      "id": "fork-user-space",
+      "title": "用户空间 — fork() / clone()调用",
+      "description": "用户空间程序调用fork()（或底层的clone()系统调用）。C库封装函数发出syscall指令，从ring 3转换到ring 0。在x86-64上，这使用SYSCALL指令，在跳转到内核入口点之前将返回地址存入RCX、RFLAGS存入R11。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "fork-libc-wrapper",
+          "title": "glibc fork()封装函数",
+          "description": "glibc的fork()函数以SIGCHLD标志调用clone()系统调用，为内核设置参数。它调用syscall指令（在x86-32上使用int 0x80）触发进入内核模式。x86上fork的系统调用号为57（x86-64）或2（x86-32）。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-syscall-instruction",
+          "title": "SYSCALL / int 0x80指令",
+          "description": "CPU执行SYSCALL指令，原子性地保存RIP/RFLAGS，将栈指针切换到TSS中定义的内核栈，并跳转到MSR_LSTAR入口点（entry_64.S中的system_call）。此后硬件在ring 0下运行，使用内核的GS基址。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq  %rsp,PER_CPU_VAR(old_rsp)\n  movq  PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-kernel-entry",
+      "title": "内核入口 — 系统调用分派 → sys_fork → do_fork",
+      "description": "内核的系统调用分派表将系统调用号路由到sys_fork()（x86-32）或stub_clone()（x86-64）。这些架构相关的存根函数收集寄存器参数并调用kernel/fork.c中与架构无关的do_fork()函数，后者执行实际的进程复制逻辑。",
+      "data_structures": ["task_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "fork-sys-fork",
+          "title": "sys_fork() / sys_clone()入口",
+          "description": "在x86-32上，sys_fork()定义于arch/x86/kernel/process.c。它以SIGCHLD标志调用do_fork()，从pt_regs结构传递用户空间栈指针。在x86-64上，stub_clone()收集寄存器参数并委托给sys_clone()，后者也调用do_fork()。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process.c",
+            "line": 165,
+            "snippet": "int sys_fork(struct pt_regs *regs)\n{\n  return do_fork(SIGCHLD, regs->sp, regs, 0, NULL, NULL);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-do-fork-entry",
+          "title": "do_fork()入口点",
+          "description": "kernel/fork.c中的do_fork()是fork的核心实现。它验证clone标志的一致性，然后调用copy_process()复制父进程的task_struct和所有相关资源。copy_process()返回后，do_fork()调用wake_up_new_task()来调度子进程。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1379,
+            "snippet": "long do_fork(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *parent_tidptr,\n  int __user *child_tidptr)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-clone-flags",
+          "title": "CLONE_*标志",
+          "description": "clone_flags参数控制父进程和子进程之间共享哪些资源。CLONE_VM共享地址空间（线程使用），CLONE_FILES共享文件描述符，CLONE_SIGHAND共享信号处理程序。普通的fork()仅使用SIGCHLD作为标志值，导致所有资源都被完整复制。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "include/linux/sched.h",
+            "line": 5,
+            "snippet": "#define CLONE_VM      0x00000100\n#define CLONE_FILES   0x00000400\n#define CLONE_SIGHAND 0x00000800\n#define CLONE_THREAD  0x00010000"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-process-duplication",
+      "title": "进程复制 — copy_process → dup_task_struct → 新task_struct",
+      "description": "copy_process()是fork的核心：它调用dup_task_struct()分配新的task_struct和内核栈，根据clone_flags复制或共享每个进程资源，初始化调度字段，并通过alloc_pid()分配新PID。",
+      "data_structures": ["task_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "fork-copy-process",
+          "title": "copy_process()编排",
+          "description": "kernel/fork.c中的copy_process()是复制进程的综合函数。它验证标志组合，首先调用dup_task_struct()，然后继续复制每个子系统（凭证、mm、文件、信号等）。它初始化新任务的列表链接，成功时返回指向子进程task_struct的指针。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 972,
+            "snippet": "static struct task_struct *copy_process(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *child_tidptr,\n  struct pid *pid,\n  int trace)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-dup-task-struct",
+          "title": "dup_task_struct() — 新task_struct + 内核栈",
+          "description": "dup_task_struct()使用alloc_task_struct()分配新的task_struct，使用alloc_thread_info()分配新的8KB（THREAD_SIZE）内核栈。然后对父进程的task_struct进行普通结构体复制到新task_struct，并设置thread_info指针指向新内核栈的底部。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 207,
+            "snippet": "static struct task_struct *dup_task_struct(struct task_struct *orig)\n{\n  struct task_struct *tsk;\n  struct thread_info *ti;\n  tsk = alloc_task_struct();\n  if (!tsk)\n    return NULL;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-task-struct-init",
+          "title": "task_struct字段初始化",
+          "description": "dup_task_struct()复制父进程字段后，copy_process()重新初始化每个进程必须唯一的字段：PID、状态（设为TASK_UNINTERRUPTIBLE）、使用计数、子进程/兄弟进程的列表头、CPU时间统计，以及thread_struct中的寄存器状态（包括指令指针设为ret_from_fork）。",
+          "type": "data",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1186,
+            "snippet": "p->did_exec = 0;\n  delayacct_tsk_init(p);\n  copy_flags(clone_flags, p);\n  INIT_LIST_HEAD(&p->children);\n  INIT_LIST_HEAD(&p->sibling);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-alloc-pid",
+          "title": "alloc_pid() — 新PID分配",
+          "description": "kernel/pid.c中的alloc_pid()从pidmap位图中分配新的struct pid。内核维护独立的PID命名空间；alloc_pid()在每个适用的命名空间中找到下一个空闲的PID号，分配struct pid对象，并通过任务的pids[]数组将其附加到新task_struct。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid.c",
+            "line": 258,
+            "snippet": "struct pid *alloc_pid(struct pid_namespace *ns)\n{\n  struct pid *pid;\n  enum pid_type type;\n  int i, nr;\n  struct pid_namespace *tmp;\n  struct upid *upid;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-memory-resources",
+      "title": "内存与资源 — copy_mm（CoW页表） → copy_files → copy_sighand",
+      "description": "copy_process()复制由clone_flags控制的内存映射和其他资源。对于普通fork()，copy_mm()调用dup_mm()复制mm_struct，并在父进程和子进程的页表中将所有可写页标记为写时复制。copy_files()克隆文件描述符表，copy_sighand()复制信号处理程序状态。",
+      "data_structures": ["task_struct", "mm_struct", "files_struct", "signal_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "fork-copy-mm",
+          "title": "copy_mm() — 地址空间复制",
+          "description": "copy_mm()检查CLONE_VM：如果设置（线程），子进程共享父进程的mm_struct。否则，调用dup_mm()分配新的mm_struct，通过dup_mmap()复制所有vm_area_struct VMA，并遍历所有页表项调用copy_page_range()将PTE设为只读，并在父进程和子进程中标记为写时复制。",
+          "type": "code",
+          "data_structures": ["mm_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 702,
+            "snippet": "static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct mm_struct *mm, *oldmm;\n  int retval;\n  tsk->min_flt = tsk->maj_flt = 0;\n  tsk->nvcsw = tsk->nivcsw = 0;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-copy-page-range",
+          "title": "copy_page_range() — CoW PTE设置",
+          "description": "mm/memory.c中的copy_page_range()遍历父进程的页表（PGD→PUD→PMD→PTE），对于每个存在的、可写的PTE，清除父进程和子进程中的写位并递增页引用计数。这实现了写时复制：任一进程稍后发生页错误将调用do_wp_page()创建私有副本。",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 757,
+            "snippet": "int copy_page_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,\n  struct vm_area_struct *vma)\n{\n  pgd_t *src_pgd, *dst_pgd;\n  unsigned long next;\n  unsigned long addr = vma->vm_start;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-copy-files",
+          "title": "copy_files() — 文件描述符表克隆",
+          "description": "copy_files()检查CLONE_FILES：如果设置（线程），子进程递增父进程files_struct的引用计数并共享它。否则，dup_fd()分配新的files_struct，复制包含所有打开文件指针的fdtable，并为每个打开的描述符递增struct file引用计数。",
+          "type": "code",
+          "data_structures": ["files_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 744,
+            "snippet": "static int copy_files(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct files_struct *oldf, *newf;\n  oldf = current->files;\n  if (!oldf)\n    goto out;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-copy-sighand",
+          "title": "copy_sighand() — 信号处理程序复制",
+          "description": "copy_sighand()检查CLONE_SIGHAND：如果设置，子进程共享父进程的sighand_struct（引用计数）。否则，分配新的sighand_struct并复制父进程的sigaction数组及所有信号处理函数指针和标志。copy_signal()还复制用于待处理信号和会话/组信息的signal_struct。",
+          "type": "code",
+          "data_structures": ["signal_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 796,
+            "snippet": "static int copy_sighand(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct sighand_struct *sig;\n  if (clone_flags & CLONE_SIGHAND) {\n    atomic_inc(&current->sighand->count);\n    return 0;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-scheduler-integration",
+      "title": "调度器集成 — sched_fork → wake_up_new_task → 运行队列",
+      "description": "在子进程可以运行之前，必须将其集成到CFS（完全公平调度器）中。sched_fork()初始化子进程的sched_entity并将其放到运行队列上。然后wake_up_new_task()将子进程标记为TASK_RUNNING并将其加入CPU的运行队列，使其有资格被调度。",
+      "data_structures": ["task_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "fork-sched-fork",
+          "title": "sched_fork() — 调度实体初始化",
+          "description": "kernel/sched.c中的sched_fork()初始化子进程task_struct中嵌入的sched_entity（se）。它设置子进程的调度策略、优先级（从父进程继承），并初始化CFS虚拟运行时间（vruntime）。任务状态设为TASK_RUNNING，但尚未加入任何运行队列。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2355,
+            "snippet": "void sched_fork(struct task_struct *p, int clone_flags)\n{\n  int cpu = get_cpu();\n  __sched_fork(p);\n  p->state = TASK_RUNNING;\n  p->se.exec_start = 0;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-sched-entity-init",
+          "title": "struct sched_entity初始化",
+          "description": "子进程task_struct中的sched_entity（p->se）被初始化，vruntime设置为max(parent_vruntime, cfs_rq->min_vruntime)，以防止新任务以不公平的低虚拟时间独占CPU。负载权重根据任务的nice值设置。",
+          "type": "data",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2389,
+            "snippet": "static void task_fork_fair(struct task_struct *p)\n{\n  struct cfs_rq *cfs_rq = task_cfs_rq(current);\n  struct sched_entity *se = &p->se, *curr = cfs_rq->curr;\n  int this_cpu = smp_processor_id();"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-wake-up-new-task",
+          "title": "wake_up_new_task() — 加入运行队列",
+          "description": "kernel/sched.c中的wake_up_new_task()在copy_process()完成后由do_fork()调用。它获取运行队列锁，调用activate_task() → enqueue_task()将子进程的sched_entity插入CFS红黑树，如果子进程优先级高于当前任务，可能触发重新调度。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2418,
+            "snippet": "void wake_up_new_task(struct task_struct *p, unsigned long clone_flags)\n{\n  unsigned long flags;\n  struct rq *rq;\n  rq = task_rq_lock(p, &flags);\n  activate_task(rq, p, 0);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "fork-return",
+      "title": "返回 — 父进程获得子进程PID；子进程从ret_from_fork开始执行",
+      "description": "do_fork()将子进程的PID返回给父进程，父进程在fork()调用后恢复执行，子进程PID作为返回值。子进程从arch/x86/kernel/entry_64.S中的ret_from_fork开始执行，返回0给用户空间，因此fork()在两个进程中各返回一次。",
+      "data_structures": ["task_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "fork-parent-return",
+          "title": "父进程返回子进程PID",
+          "description": "copy_process()将子进程task_struct指针返回给do_fork()。do_fork()使用task_pid_vnr()提取PID号并返回。内核系统调用退出路径恢复父进程的寄存器（RAX设为子进程PID）并执行SYSRET，返回用户空间，子进程PID作为fork()的返回值。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1475,
+            "snippet": "nr = task_pid_vnr(p);\n  if (clone_flags & CLONE_PARENT_SETTID)\n    put_user(nr, parent_tidptr);\n  /* ... */\n  return nr;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-ret-from-fork",
+          "title": "子进程在ret_from_fork恢复执行，返回值为0",
+          "description": "子进程task_struct的thread.ip在copy_process()期间被设为ret_from_fork。当调度器首次运行子进程时，它跳转到entry_64.S中的ret_from_fork。该汇编存根调用schedule_tail()释放运行队列锁，然后调用用户空间返回路径并设置RAX=0，因此fork()在子进程中返回0。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 396,
+            "snippet": "ENTRY(ret_from_fork)\n  DEFAULT_FRAME\n  push kernel_eflags(%rip)\n  CFI_ADJUST_CFA_OFFSET 8\n  popf\n  CFI_ADJUST_CFA_OFFSET -8\n  call schedule_tail"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "fork-child-zero-return",
+          "title": "子进程fork()返回值：0",
+          "description": "按照惯例，fork()在子进程中返回0。这是通过copy_process()在task_struct初始化期间将子进程的pt_regs.ax字段（系统调用返回值寄存器）清零实现的。当子进程最终到达系统调用返回路径时，它发现RAX=0并将其返回给用户空间。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process_64.c",
+            "line": 142,
+            "snippet": "int copy_thread(unsigned long clone_flags, unsigned long sp,\n  unsigned long unused,\n  struct task_struct *p, struct pt_regs *regs)\n{\n  struct pt_regs *childregs;\n  childregs = task_pt_regs(p);\n  *childregs = *regs;\n  childregs->ax = 0;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

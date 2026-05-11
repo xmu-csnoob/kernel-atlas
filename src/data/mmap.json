@@ -1,0 +1,384 @@
+{
+  "id": "mmap",
+  "name": "mmap()",
+  "description": "Maps a file or anonymous memory region into the calling process's virtual address space. The kernel allocates a new VMA (virtual memory area), sets up page tables lazily, and resolves page faults on first access by mapping physical pages from the page cache or allocating anonymous zero-filled pages.",
+  "signature": "void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)",
+  "entry_point_file": "arch/x86/kernel/sys_x86_64.c",
+  "main_flow": [
+    {
+      "id": "mmap-user-space",
+      "title": "User Space",
+      "description": "The user-space program invokes mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) via the C library wrapper. The glibc wrapper places the syscall number (NR_mmap = 9 on x86-64) in %rax and the six arguments in %rdi, %rsi, %rdx, %r10, %r8, %r9, then executes the syscall instruction.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "mmap-user-space-glibc",
+          "title": "glibc mmap() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a thin wrapper around the raw mmap syscall. On x86-64 it sets up the ABI calling convention: %rax = __NR_mmap (9), %rdi = addr, %rsi = length, %rdx = prot, %r10 = flags, %r8 = fd, %r9 = offset. No kernel involvement yet.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S, which dispatches to sys_mmap2() or sys_mmap_pgoff() depending on the architecture.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-user-space-args",
+          "title": "mmap() arguments",
+          "type": "concept",
+          "description": "The six mmap arguments define the mapping: addr (hint address, NULL lets kernel choose), length (size in bytes), prot (R/W/X permissions), flags (shared/private, anonymous/file-backed, fixed, etc.), fd (file descriptor, -1 for anonymous), offset (byte offset into the file).",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The CPU is now in ring 0. The generic syscall dispatch routes NR_mmap to sys_mmap2() on x86, which converts the arguments and calls sys_mmap_pgoff(). The kernel validates the fd (if file-backed), checks permissions, and begins the process of finding a suitable virtual address range.",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "mmap-kernel-entry-sys-mmap2",
+          "title": "sys_mmap2()",
+          "type": "code",
+          "description": "On x86-32, sys_mmap2() is the entry point. On x86-64, sys_mmap() is used directly. Both call sys_mmap_pgoff() after converting the page offset. The function checks that prot does not request both PROT_WRITE and MAP_SHARED on a file opened read-only.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/sys_x86_64.c",
+            "line": 21,
+            "snippet": "SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,\n  unsigned long, prot, unsigned long, flags,\n  unsigned long, fd, unsigned long, off)\n{\n  if (off & ~PAGE_MASK)\n    return -EINVAL;\n  return sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-kernel-entry-sys-mmap-pgoff",
+          "title": "sys_mmap_pgoff()",
+          "type": "code",
+          "description": "sys_mmap_pgoff() is the architecture-independent entry point. It calls security_mmap_file() for LSM permission checks, then acquires the file pointer via fget() if fd >= 0. Finally it calls do_mmap_pgoff() with the validated file struct (or NULL for anonymous mappings).",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 909,
+            "snippet": "unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long prot,\n  unsigned long flags, unsigned long pgoff)\n{\n  struct mm_struct *mm = current->mm;\n  struct inode *inode;\n  unsigned int vm_flags;\n  int error;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-kernel-entry-get-unmapped-area",
+          "title": "get_unmapped_area()",
+          "type": "code",
+          "description": "If the user passed addr = NULL (or MAP_FIXED was not set), get_unmapped_area() searches the process's virtual memory space for a contiguous free region of the requested length. It uses the mmap_base and scans downward from the top of the user address space.",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1455,
+            "snippet": "unsigned long get_unmapped_area(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long pgoff, unsigned long flags)\n{\n  if (flags & MAP_FIXED)\n    return addr;\n  if (file && file->f_op && file->f_op->get_unmapped_area)\n    return file->f_op->get_unmapped_area(file, addr, len, pgoff, flags);\n  return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-vma-allocation",
+      "title": "VMA Allocation",
+      "description": "do_mmap_pgoff() calls mmap_region() to create a new virtual memory area (VMA). It uses find_vma_prepare() to locate the insertion point in the red-black tree of VMAs, then allocates a new vm_area_struct and links it into the mm_struct's VMA list and rb_tree.",
+      "data_structures": ["mm_struct", "vm_area_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "mmap-vma-do-mmap-pgoff",
+          "title": "do_mmap_pgoff()",
+          "type": "code",
+          "description": "do_mmap_pgoff() is the core of mmap(). It checks for conflicting mappings, calculates the VM flags from prot and flags, calls mmap_region() to create the VMA, and if file-backed, calls file->f_op->mmap() to set up the file's page cache mapping.",
+          "data_structures": ["mm_struct", "vm_area_struct", "file"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1068,
+            "snippet": "unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long prot,\n  unsigned long flags, unsigned long pgoff)\n{\n  struct mm_struct *mm = current->mm;\n  struct vm_area_struct *vma, *prev;\n  ...\n  vma = mmap_region(file, addr, len, flags, vm_flags, pgoff);\n  return addr;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-vma-find-vma-prepare",
+          "title": "find_vma_prepare()",
+          "type": "code",
+          "description": "find_vma_prepare() walks the mm_struct's VMA red-black tree to find the VMA that would follow the new mapping at the given address. It returns the predecessor VMA and the tree insertion point, which are needed to maintain the rb_tree invariants.",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 228,
+            "snippet": "struct vm_area_struct *find_vma_prepare(struct mm_struct *mm,\n  unsigned long addr, struct vm_area_struct **pprev,\n  struct rb_node ***rb_link, struct rb_node **rb_parent)\n{\n  struct vm_area_struct *vma;\n  struct rb_node **__rb_link, *__rb_parent, *rb_prev;\n\n  __rb_link = &mm->mm_rb.rb_node;\n  rb_prev = __rb_parent = NULL;\n  vma = NULL;\n\n  while (*__rb_link) {\n    ...\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-vma-vma-merge",
+          "title": "vma_merge()",
+          "type": "code",
+          "description": "vma_merge() attempts to merge the new mapping with an adjacent VMA that has compatible permissions and backing. If successful, no new vm_area_struct is allocated — the existing VMA is simply expanded. This is a common optimization for sequential anonymous mappings.",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 588,
+            "snippet": "struct vm_area_struct *vma_merge(struct mm_struct *mm,\n  struct vm_area_struct *prev, unsigned long addr,\n  unsigned long end, unsigned long vm_flags,\n  struct anon_vma *anon_vma, struct file *file,\n  pgoff_t pgoff, struct mempolicy *policy)\n{\n  ...\n  if (prev && prev->vm_end == addr) {\n    if (can_vma_merge_after(prev, vm_flags,\n        anon_vma, file, pgoff)) {\n      ...\n    }\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-vma-struct",
+          "title": "struct vm_area_struct",
+          "type": "data",
+          "description": "The vm_area_struct is the kernel's representation of a contiguous virtual memory region. Key fields include vm_start/vm_end (address range), vm_flags (permissions and behavior), vm_mm (back pointer to mm_struct), vm_file (backed file, if any), and vm_pgoff (page offset into the file).",
+          "data_structures": ["vm_area_struct", "mm_struct"],
+          "source_ref": {
+            "file": "include/linux/mm_types.h",
+            "line": 186,
+            "snippet": "struct vm_area_struct {\n  struct mm_struct *vm_mm;\n  unsigned long vm_start;\n  unsigned long vm_end;\n  struct vm_area_struct *vm_next;\n  pgprot_t vm_page_prot;\n  unsigned long vm_flags;\n  struct rb_node vm_rb;\n  ...\n  struct file *vm_file;\n  unsigned long vm_pgoff;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-page-fault",
+      "title": "Page Fault",
+      "description": "mmap() does not allocate physical pages immediately — page tables are set up lazily. On the first access to the mapped region, the CPU raises a page fault (PF). The kernel's do_page_fault() handler determines the fault type, locates the VMA covering the faulting address, and dispatches to handle_mm_fault().",
+      "data_structures": ["vm_area_struct", "task_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "mmap-pf-do-page-fault",
+          "title": "do_page_fault()",
+          "type": "code",
+          "description": "do_page_fault() is the x86 page fault handler registered in the IDT. It reads CR2 to get the faulting virtual address, checks whether the fault occurred in user or kernel mode, and searches the VMA list for a region containing the fault address. If found, it calls handle_mm_fault(); otherwise it delivers SIGSEGV.",
+          "data_structures": ["task_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "arch/x86/mm/fault.c",
+            "line": 647,
+            "snippet": "static void __kprobes do_page_fault(struct pt_regs *regs,\n  unsigned long error_code)\n{\n  struct vm_area_struct *vma;\n  unsigned long address = read_cr2();\n  struct mm_struct *mm = current->mm;\n  ...\n  vma = find_vma(mm, address);\n  if (!vma)\n    goto bad_area;\n  if (vma->vm_start <= address)\n    goto good_area;\n  ...\n  fault = handle_mm_fault(mm, vma, address, write);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-pf-handle-mm-fault",
+          "title": "handle_mm_fault()",
+          "type": "code",
+          "description": "handle_mm_fault() walks the page table hierarchy (pgd → pud → pmd → pte) for the faulting address. If any level is missing, it allocates a new page table page. It then calls the architecture-specific handle_pte_fault() to resolve the actual PTE.",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2698,
+            "snippet": "int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,\n  unsigned long address, int write_access)\n{\n  pgd_t *pgd;\n  pud_t *pud;\n  pmd_t *pmd;\n  pte_t *pte;\n\n  pgd = pgd_offset(mm, address);\n  pud = pud_alloc(mm, pgd, address);\n  pmd = pmd_alloc(mm, pud, address);\n  pte = pte_alloc_map(mm, pmd, address);\n\n  return handle_pte_fault(mm, vma, address, pte, pmd, write_access);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-pf-pte-walk",
+          "title": "Page table walk (PGD → PUD → PMD → PTE)",
+          "type": "concept",
+          "description": "On x86-64 with 4-level paging, the virtual address is split into indices: PGD (bits 39-47), PUD (bits 30-38), PMD (bits 21-29), and PTE (bits 12-20). Each level is a 512-entry table. The walk starts at CR3 (the physical address of the PGD), then follows pointers down to the leaf PTE, allocating intermediate tables as needed.",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-pf-find-vma",
+          "title": "find_vma()",
+          "type": "code",
+          "description": "find_vma() searches the mm_struct's VMA red-black tree for the first VMA whose vm_end is greater than the given address. If the address falls within [vm_start, vm_end), the fault is valid and the kernel proceeds to handle it. Otherwise, the access is out of bounds and SIGSEGV is delivered.",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1263,
+            "snippet": "struct vm_area_struct *find_vma(struct mm_struct *mm,\n  unsigned long addr)\n{\n  struct vm_area_struct *vma = NULL;\n\n  if (mm) {\n    vma = mm->mmap_cache;\n    if (!(vma && vma->vm_end > addr && vma->vm_start <= addr)) {\n      struct rb_node *rb_node;\n      rb_node = mm->mm_rb.rb_node;\n      vma = NULL;\n      while (rb_node) {\n        ...\n      }\n    }\n  }\n  return vma;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-mapping",
+      "title": "Page Mapping",
+      "description": "handle_pte_fault() dispatches based on the PTE state. For anonymous mappings, do_anonymous_page() allocates a zero-filled page from the buddy allocator and installs it in the PTE. For file-backed mappings, do_file_page() (via do_linear_fault) locates or allocates a page from the page cache and maps it.",
+      "data_structures": ["address_space", "page"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "mmap-mapping-do-anonymous-page",
+          "title": "do_anonymous_page()",
+          "type": "code",
+          "description": "For anonymous mappings (MAP_ANONYMOUS or vm_file == NULL), do_anonymous_page() allocates a new zero-filled page via alloc_zeroed_user_highpage_movable(). It sets the PTE to point to the new page with appropriate permissions (read/write based on vm_flags), then updates the RSS counter.",
+          "data_structures": ["mm_struct", "page"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2362,
+            "snippet": "static int do_anonymous_page(struct mm_struct *mm,\n  struct vm_area_struct *vma, pte_t *page_table,\n  pmd_t *pmd, int write_access, unsigned long addr)\n{\n  struct page *page;\n  pte_t entry;\n  ...\n  page = alloc_zeroed_user_highpage_movable(vma, addr);\n  if (!page)\n    return VM_FAULT_OOM;\n  entry = mk_pte(page, vma->vm_page_prot);\n  if (write_access)\n    entry = pte_mkwrite(pte_mkdirty(entry));\n  set_pte_at(mm, addr, page_table, entry);\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-mapping-do-file-page",
+          "title": "do_file_page() / do_linear_fault()",
+          "type": "code",
+          "description": "For file-backed mappings, handle_pte_fault() calls do_file_page() (which becomes do_linear_fault() in newer kernels). This path searches the page cache via find_get_page(), and on a cache miss allocates a new page and calls the filesystem's readpage method to fill it from disk.",
+          "data_structures": ["address_space", "page", "file"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2489,
+            "snippet": "static int do_file_page(struct mm_struct *mm,\n  struct vm_area_struct *vma, unsigned long address,\n  pte_t *page_table, pmd_t *pmd, int write_access,\n  pte_t orig_pte)\n{\n  ...\n  page = find_get_page(mapping, pgoff);\n  if (!page) {\n    /* page cache miss — allocate and read from disk */\n    ...\n  }\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-mapping-page-cache",
+          "title": "Page cache integration",
+          "type": "data",
+          "description": "File-backed mmap pages are backed by the page cache (address_space). Multiple processes mapping the same file region share the same physical pages through the page cache. This is why MAP_SHARED works: all mappers see the same page cache pages, and writes go through the page cache to disk.",
+          "data_structures": ["address_space", "page", "inode"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 640,
+            "snippet": "struct address_space {\n  struct inode *host;\n  struct radix_tree_root page_tree;\n  spinlock_t tree_lock;\n  unsigned int i_mmap_writable;\n  struct prio_tree_root i_mmap;\n  struct list_head i_mmap_nonlinear;\n  ...\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-mapping-cow",
+          "title": "Copy-on-Write (MAP_PRIVATE)",
+          "type": "concept",
+          "description": "For MAP_PRIVATE mappings, the initial PTE is read-only even if PROT_WRITE was requested. On the first write, a page fault fires and the kernel copies the page (do_wp_page), giving the process a private writable copy. The original page cache page remains unchanged. This is the same CoW mechanism used by fork().",
+          "data_structures": ["page", "vm_area_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-tlb-update",
+      "title": "TLB Update",
+      "description": "After installing a new PTE, the kernel must invalidate the Translation Lookaside Buffer (TLB) entry for the faulting virtual address. On x86, flush_tlb_page() issues an INVLPG instruction to invalidate the single TLB entry, ensuring subsequent accesses use the newly mapped physical page.",
+      "data_structures": ["mm_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "mmap-tlb-flush-tlb-page",
+          "title": "flush_tlb_page()",
+          "type": "code",
+          "description": "flush_tlb_page() is the architecture-specific TLB invalidation routine. On x86-64 it issues the INVLPG instruction with the faulting virtual address, which invalidates the TLB entry for that page. This forces the CPU to re-walk the page tables on the next access.",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/mm/tlb.c",
+            "line": 198,
+            "snippet": "void flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)\n{\n  struct mm_struct *mm = vma->vm_mm;\n  ...\n  if (cpumask_test_cpu(cpu, mm_cpumask(mm))) {\n    __flush_tlb_one(addr);\n  }\n  ...\n}\n\nstatic inline void __flush_tlb_one(unsigned long addr)\n{\n  asm volatile(\"invlpg (%0)\" :: \"r\" (addr) : \"memory\");\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-tlb-invlpg",
+          "title": "INVLPG instruction",
+          "type": "hardware",
+          "description": "INVLPG is an x86 privileged instruction that invalidates the TLB entry for a single virtual page. Unlike reloading CR3 (which flushes the entire TLB), INVLPG is selective and efficient. It also invalidates any associated cache lines in the paging-structure caches.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "The CPU's INVLPG micro-op walks the L1/L2 TLBs and removes the entry matching the given virtual address. If the page is present in the L1 instruction or data TLB, it is evicted. The paging-structure caches (PDE cache, PML4 cache) are also checked and invalidated if they contain stale translations for this address.",
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-tlb-lazy-tlb",
+          "title": "Lazy TLB mode",
+          "type": "concept",
+          "description": "To avoid unnecessary TLB shootdowns across CPUs, the kernel uses lazy TLB mode. When a page table change occurs, only CPUs that are actively running threads in the affected mm need to flush. Other CPUs defer the flush until they context-switch into that mm. This is tracked via the mm_cpumask.",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/mm/tlb.c",
+            "line": 89,
+            "snippet": "void leave_mm(int cpu)\n{\n  if (cpumask_test_cpu(cpu, mm_cpumask(&init_mm)))\n    return;\n  cpumask_clear_cpu(cpu, mm_cpumask(current->mm));\n  load_cr3(swapper_pg_dir);\n}\n\n/* Called from context switch */\nvoid switch_mm(struct mm_struct *prev, struct mm_struct *next,\n  struct task_struct *tsk)\n{\n  ...\n  cpumask_set_cpu(cpu, mm_cpumask(next));\n  load_cr3(next->pgd);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-return",
+      "title": "Return Path",
+      "description": "After the VMA is created (and for file-backed mappings, after file->f_op->mmap() sets up the page cache relationship), do_mmap_pgoff() returns the mapped virtual address. This address propagates back through sys_mmap_pgoff(), sys_mmap2(), and the syscall return path to user space.",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "mmap-return-addr",
+          "title": "Return mapped address",
+          "type": "code",
+          "description": "do_mmap_pgoff() returns the start address of the new mapping. This value flows back through the call chain: sys_mmap_pgoff() → sys_mmap2() → entry_64.S syscall return path. The address is placed in %rax and returned to the glibc wrapper, which returns it to the caller.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1212,
+            "snippet": "unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long prot,\n  unsigned long flags, unsigned long pgoff)\n{\n  ...\n  addr = mmap_region(file, addr, len, flags, vm_flags, pgoff);\n  return addr;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-return-syscall-exit",
+          "title": "Syscall return — sysret",
+          "type": "code",
+          "description": "The return value (the mapped virtual address) is placed in %rax by the syscall dispatch in entry_64.S. RESTORE_ARGS reloads the saved user-space registers, and sysretq atomically restores %rip, %rflags, and switches back to ring 3. The C library wrapper receives the address in %rax and returns it to the caller.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-return-user-access",
+          "title": "First user access triggers page fault",
+          "type": "concept",
+          "description": "mmap() returns immediately — no physical pages are allocated yet (except for file-backed mappings where the filesystem may pre-populate some pages). The first read or write to the mapped region triggers the page fault path described above, which lazily allocates and maps the physical page.",
+          "data_structures": ["vm_area_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

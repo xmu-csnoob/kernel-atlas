@@ -1,0 +1,370 @@
+{
+  "id": "socket",
+  "name": "socket()",
+  "description": "Creates an endpoint for network communication. The kernel allocates a new socket object, selects the appropriate protocol family implementation (e.g., AF_INET for IPv4), and initializes protocol-specific state including the send/receive buffer queues and protocol operation vectors.",
+  "signature": "int socket(int domain, int type, int protocol)",
+  "entry_point_file": "net/socket.c",
+  "main_flow": [
+    {
+      "id": "socket-user-space",
+      "title": "User Space",
+      "description": "The user-space program invokes socket(AF_INET, SOCK_STREAM, 0) via the C library wrapper. The syscall number (NR_socket = 41 on x86-64) is placed in %rax, with domain in %rdi, type in %rsi, and protocol in %rdx, then the syscall instruction traps into the kernel.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "socket-user-space-glibc",
+          "title": "glibc socket() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a thin wrapper around the raw syscall. It sets up the ABI-defined calling convention: %rax = __NR_socket (41), %rdi = domain (AF_INET = 2), %rsi = type (SOCK_STREAM = 1), %rdx = protocol (0 = IPPROTO_IP). No kernel involvement yet.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags into MSR_LSTAR-defined kernel entry, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-user-space-params",
+          "title": "Socket parameters",
+          "type": "data",
+          "description": "The domain parameter selects the address family (AF_INET for IPv4, AF_INET6 for IPv6, AF_UNIX for local). The type parameter selects the socket semantics (SOCK_STREAM for TCP, SOCK_DGRAM for UDP, SOCK_RAW for raw IP). The protocol parameter is usually 0 to let the kernel pick the default protocol for the domain+type combination.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The generic syscall dispatch routes NR_socket to sys_socket(), which is the kernel entry point. sys_socket() validates the domain, type, and protocol parameters, then calls sock_create() to begin the actual socket object allocation.",
+      "data_structures": ["task_struct", "socket"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "socket-kernel-entry-sys-socket",
+          "title": "SYSCALL_DEFINE3(socket, ...)",
+          "type": "code",
+          "description": "sys_socket() is defined with the SYSCALL_DEFINE3 macro in net/socket.c. It calls sock_create() to create the socket object, then calls sock_map_fd() to allocate a file descriptor and associate it with the new socket.",
+          "data_structures": ["task_struct", "socket"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 1266,
+            "snippet": "SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)\n{\n  int retval;\n  struct socket *sock;\n\n  retval = sock_create(family, type, protocol, &sock);\n  if (retval < 0)\n    goto out;\n\n  retval = sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-kernel-entry-sock-create",
+          "title": "sock_create()",
+          "type": "code",
+          "description": "sock_create() is the central socket creation function. It calls __sock_create() which looks up the net_proto_family for the given address family, validates the socket type flags, and then calls the family's create method to allocate protocol-specific state.",
+          "data_structures": ["socket"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 1256,
+            "snippet": "int sock_create(int family, int type, int protocol, struct socket **res)\n{\n  return __sock_create(current->nsproxy->net_ns, family,\n                       type, protocol, res, 0);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-kernel-entry-sock-map-fd",
+          "title": "sock_map_fd() — socket → fd",
+          "type": "code",
+          "description": "sock_map_fd() allocates a new file descriptor via get_unused_fd_flags(), creates a struct file via sock_alloc_file(), and installs the fd→file mapping via fd_install(). The struct file's f_op is set to socket_file_ops, so subsequent read/write/close syscalls on this fd are routed to socket operations.",
+          "data_structures": ["task_struct", "file", "socket"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 344,
+            "snippet": "static int sock_map_fd(struct socket *sock, int flags)\n{\n  struct file *newfile;\n  int fd = get_unused_fd_flags(flags);\n  if (unlikely(fd < 0))\n    return fd;\n\n  newfile = sock_alloc_file(sock, flags, NULL);\n  if (likely(!IS_ERR(newfile))) {\n    fd_install(fd, newfile);\n    return fd;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-af-inet",
+      "title": "AF_INET Protocol Family",
+      "description": "For AF_INET (IPv4), the kernel dispatches to inet_create() in net/ipv4/af_inet.c. This function validates the socket type against the registered protocol table, allocates a struct sock (the generic socket state), and initializes the TCP or UDP protocol-specific state including the operation vectors.",
+      "data_structures": ["socket", "sock", "inet_sock"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "socket-af-inet-inet-create",
+          "title": "inet_create()",
+          "type": "code",
+          "description": "inet_create() is the AF_INET family's create method. It searches the inetsw_array for a matching protocol (TCP for SOCK_STREAM, UDP for SOCK_DGRAM), validates that the protocol supports the requested socket type, and then calls sk_alloc() to allocate the generic sock structure.",
+          "data_structures": ["socket", "sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/ipv4/af_inet.c",
+            "line": 280,
+            "snippet": "static int inet_create(struct net *net, struct socket *sock, int protocol,\n                       int kern)\n{\n  struct sock *sk;\n  struct inet_protosw *answer;\n  struct inet_sock *inet;\n  ...\n  list_for_each_entry(answer, &inetsw[sock->type], list) {\n    if (protocol == answer->protocol)\n      break;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-af-inet-sk-alloc",
+          "title": "sk_alloc() — allocate struct sock",
+          "type": "code",
+          "description": "sk_alloc() allocates memory for the protocol-specific sock structure from the socket slab cache. For TCP this is a struct tcp_sock (which embeds struct inet_sock, which embeds struct sock). The allocation uses kmem_cache_alloc() with GFP_KERNEL.",
+          "data_structures": ["sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/core/sock.c",
+            "line": 1064,
+            "snippet": "struct sock *sk_alloc(struct net *net, int family,\n                      gfp_t priority,\n                      struct proto *prot)\n{\n  struct sock *sk;\n\n  sk = sk_prot_alloc(prot, priority | __GFP_ZERO, family);\n  if (sk) {\n    sock_init_data(NULL, sk);\n    sk->sk_family = family;\n  }\n  return sk;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-af-inet-proto-ops",
+          "title": "struct proto_ops — inet_stream_ops",
+          "type": "data",
+          "description": "The socket layer's struct proto_ops vector defines high-level operations like bind, connect, listen, accept, and sendmsg. For AF_INET SOCK_STREAM, the socket's ops are set to inet_stream_ops, which delegates to the transport protocol (TCP) for the actual work.",
+          "data_structures": ["socket", "sock"],
+          "source_ref": {
+            "file": "net/ipv4/af_inet.c",
+            "line": 890,
+            "snippet": "const struct proto_ops inet_stream_ops = {\n  .family       = PF_INET,\n  .owner        = THIS_MODULE,\n  .release      = inet_release,\n  .bind         = inet_bind,\n  .connect      = inet_stream_connect,\n  .socketpair   = sock_no_socketpair,\n  .accept       = inet_accept,\n  .getname      = inet_getname,\n  .poll         = tcp_poll,\n  .ioctl        = inet_ioctl,\n  .listen       = inet_listen,\n  .shutdown     = inet_shutdown,\n  .setsockopt   = sock_common_setsockopt,\n  .getsockopt   = sock_common_getsockopt,\n  .sendmsg      = tcp_sendmsg,\n  .recvmsg      = inet_recvmsg,\n  .mmap         = sock_no_mmap,\n  .sendpage     = tcp_sendpage,\n  .splice_read  = tcp_splice_read,\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-af-inet-tcp-proto",
+          "title": "struct proto — tcp_prot",
+          "type": "data",
+          "description": "The transport protocol's struct proto vector defines low-level operations like connect, disconnect, accept, and the socket state machine callbacks. For TCP, tcp_prot provides the protocol-specific methods that the socket layer calls through.",
+          "data_structures": ["sock"],
+          "source_ref": {
+            "file": "net/ipv4/tcp_ipv4.c",
+            "line": 2120,
+            "snippet": "struct proto tcp_prot = {\n  .name           = \"TCP\",\n  .owner          = THIS_MODULE,\n  .close          = tcp_close,\n  .connect        = tcp_v4_connect,\n  .disconnect     = tcp_disconnect,\n  .accept         = inet_csk_accept,\n  .ioctl          = tcp_ioctl,\n  .init           = tcp_v4_init_sock,\n  .destroy        = tcp_v4_destroy_sock,\n  .shutdown       = tcp_shutdown,\n  .setsockopt     = tcp_setsockopt,\n  .getsockopt     = tcp_getsockopt,\n  .recvmsg        = tcp_recvmsg,\n  .sendmsg        = tcp_sendmsg,\n  .backlog_rcv    = tcp_v4_do_rcv,\n  ...\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-bind-connect",
+      "title": "Bind / Connect Setup",
+      "description": "After socket creation, the application typically calls bind() to associate the socket with a local address and port, then connect() to establish a connection to a remote peer. bind() sets the local address in inet_sock; connect() initiates the TCP three-way handshake via tcp_v4_connect().",
+      "data_structures": ["socket", "sock", "inet_sock"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "socket-bind-connect-inet-bind",
+          "title": "inet_bind()",
+          "type": "code",
+          "description": "inet_bind() validates the local address and port, checks for port conflicts using the port hash table (tcp_hashinfo.bhash), and stores the local address in inet->inet_saddr and the port in inet->inet_sport. If port is 0, the kernel auto-allocates an ephemeral port.",
+          "data_structures": ["sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/ipv4/af_inet.c",
+            "line": 412,
+            "snippet": "int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)\n{\n  struct sockaddr_in *addr = (struct sockaddr_in *)uaddr;\n  struct sock *sk = sock->sk;\n  struct inet_sock *inet = inet_sk(sk);\n  unsigned short snum;\n  ...\n  snum = ntohs(addr->sin_port);\n  if (snum == 0) {\n    int err = inet_sk_get_port(sk, snum);\n    if (err)\n      return err;\n  }\n  inet->inet_saddr = addr->sin_addr.s_addr;\n  inet->inet_sport = htons(snum);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-bind-connect-tcp-v4-connect",
+          "title": "tcp_v4_connect()",
+          "type": "code",
+          "description": "tcp_v4_connect() is the TCP connect handler for IPv4. It validates the destination address, initializes the TCP state machine (moves to TCP_SYN_SENT), builds and sends the SYN packet via tcp_connect(), and starts the retransmission timer. The actual packet transmission goes through the IP layer.",
+          "data_structures": ["sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/ipv4/tcp_ipv4.c",
+            "line": 157,
+            "snippet": "int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)\n{\n  struct sockaddr_in *usin = (struct sockaddr_in *)uaddr;\n  struct inet_sock *inet = inet_sk(sk);\n  struct tcp_sock *tp = tcp_sk(sk);\n  __be16 orig_sport;\n  ...\n  tcp_set_state(sk, TCP_SYN_SENT);\n  tp->write_seq = secure_tcp_sequence_number(...);\n  inet->inet_dport = usin->sin_port;\n  inet->inet_daddr = usin->sin_addr.s_addr;\n  tcp_connect(sk);   // build and send SYN\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-bind-connect-socket-state",
+          "title": "Socket state machine",
+          "type": "concept",
+          "description": "A TCP socket progresses through states: CLOSED → SYN_SENT → ESTABLISHED (after receiving SYN-ACK). Each state transition is protected by the socket lock (sk->sk_lock.slock) and triggers callbacks in the protocol state machine. The socket() call itself only creates the socket in the CLOSED state.",
+          "data_structures": ["sock"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-sk-buff",
+      "title": "sk_buff Allocation",
+      "description": "Network data in Linux is carried in sk_buff (socket buffer) structures. When the socket is created, the send and receive buffer size limits (sk_sndbuf, sk_rcvbuf) are initialized from system defaults. When data is ready to send, alloc_skb() allocates an sk_buff from the slab cache, which holds packet data, protocol headers, and control metadata.",
+      "data_structures": ["sk_buff", "sock"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "socket-sk-buff-alloc",
+          "title": "alloc_skb() — allocate socket buffer",
+          "type": "code",
+          "description": "alloc_skb() allocates a new sk_buff structure and its associated data buffer from the slab cache. The sk_buff is the universal packet container in Linux networking, holding packet data, protocol headers at various layers, and control metadata like timestamps and routing info.",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "include/linux/skbuff.h",
+            "line": 395,
+            "snippet": "static inline struct sk_buff *alloc_skb(unsigned int size,\n                                          gfp_t priority)\n{\n  return __alloc_skb(size, priority, 0, -1);\n}\n\nstruct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,\n                            int fclone, int node)\n{\n  struct sk_buff *skb;\n  skb = kmem_cache_alloc_node(skbuff_head_cache, gfp_mask & ~GFP_DMA, node);\n  ...\n  size = SKB_DATA_ALIGN(size);\n  data = kmalloc_node_track_caller(size + sizeof(struct skb_shared_info),\n                                   gfp_mask, node);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-sk-buff-struct",
+          "title": "struct sk_buff layout",
+          "type": "data",
+          "description": "struct sk_buff is a doubly-linked list node with head/tail pointers for data, transport header, network header, and MAC header. It also carries socket ownership (sk), device info (dev), routing info (dst_entry), and checksum state. The data area is reference-counted via skb_shared_info.",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "include/linux/skbuff.h",
+            "line": 320,
+            "snippet": "struct sk_buff {\n  struct sk_buff          *next;\n  struct sk_buff          *prev;\n  struct sock             *sk;\n  ktime_t                 tstamp;\n  struct net_device       *dev;\n  ...\n  unsigned char           *transport_header;\n  unsigned char           *network_header;\n  unsigned char           *mac_header;\n  unsigned char           *tail;\n  unsigned char           *end;\n  unsigned char           *head;\n  unsigned char           *data;\n  unsigned int            len;\n  __u16                   protocol;\n  ...\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-sk-buff-socket-buffers",
+          "title": "Socket buffer limits",
+          "type": "data",
+          "description": "Each socket has send and receive buffer limits initialized at creation. sk_sndbuf defaults to /proc/sys/net/core/wmem_default (typically ~16KB), and sk_rcvbuf defaults to rmem_default. These limits control how much data can be queued in the socket before the kernel starts dropping or blocking.",
+          "data_structures": ["sock"],
+          "source_ref": {
+            "file": "net/core/sock.c",
+            "line": 180,
+            "snippet": "void sock_init_data(struct socket *sock, struct sock *sk)\n{\n  ...\n  sk->sk_sndbuf           = sysctl_wmem_default;\n  sk->sk_rcvbuf           = sysctl_rmem_default;\n  sk->sk_state            = TCP_CLOSE;\n  sk->sk_type             = sock->type;\n  ...\n  skb_queue_head_init(&sk->sk_receive_queue);\n  skb_queue_head_init(&sk->sk_write_queue);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-protocol-stack",
+      "title": "Protocol Stack",
+      "description": "When data is sent through a socket, it traverses the protocol stack: the socket layer calls tcp_sendmsg(), which builds sk_buffs, then tcp_transmit_skb() adds TCP headers and passes to ip_queue_xmit(), which adds IP headers and routes to the network device. The receive path is the reverse: NIC → IP → TCP → socket receive queue.",
+      "data_structures": ["sk_buff", "sock"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "socket-protocol-stack-tcp-transmit",
+          "title": "tcp_transmit_skb()",
+          "type": "code",
+          "description": "tcp_transmit_skb() is the core TCP transmission function. It clones or allocates an sk_buff, builds the TCP header (source/dest ports, sequence numbers, flags), computes the checksum, and passes the packet to the IP layer via ip_queue_xmit() or ip_build_and_send_pkt().",
+          "data_structures": ["sk_buff", "sock"],
+          "source_ref": {
+            "file": "net/ipv4/tcp_output.c",
+            "line": 762,
+            "snippet": "static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,\n                            int clone_it, gfp_t gfp_mask)\n{\n  const struct inet_connection_sock *icsk = inet_csk(sk);\n  struct inet_sock *inet;\n  struct tcp_sock *tp = tcp_sk(sk);\n  struct tcp_skb_cb *tcb;\n  ...\n  th = (struct tcphdr *)skb_push(skb, sizeof(struct tcphdr));\n  th->source  = inet->inet_sport;\n  th->dest    = inet->inet_dport;\n  th->seq     = htonl(tcb->seq);\n  th->ack_seq = htonl(tp->rcv_nxt);\n  th->doff    = (sizeof(struct tcphdr)) >> 2;\n  ...\n  icsk->icsk_af_ops->queue_xmit(skb, 0);   // → ip_queue_xmit\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-protocol-stack-ip-queue",
+          "title": "ip_queue_xmit() — IP layer",
+          "type": "code",
+          "description": "ip_queue_xmit() is the IP layer transmission entry point for TCP. It looks up the routing table (via sk->sk_dst_cache), builds the IP header (version, length, TTL, protocol=TCP, source/dest addresses), computes the IP checksum, and passes the packet to the output device via dev_queue_xmit().",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "net/ipv4/ip_output.c",
+            "line": 338,
+            "snippet": "int ip_queue_xmit(struct sk_buff *skb, int ipfragok)\n{\n  struct sock *sk = skb->sk;\n  struct inet_sock *inet = inet_sk(sk);\n  struct ip_options *opt = inet->opt;\n  struct rtable *rt;\n  struct iphdr *iph;\n  int df;\n  ...\n  rt = (struct rtable *)__sk_dst_check(sk, 0);\n  ...\n  iph = (struct iphdr *)skb_push(skb, sizeof(struct iphdr));\n  iph->version  = 4;\n  iph->ihl      = 5;\n  iph->tos      = inet->tos;\n  iph->tot_len  = htons(skb->len);\n  iph->ttl      = ip_select_ttl(inet, &rt->u.dst);\n  iph->protocol = sk->sk_protocol;   // IPPROTO_TCP = 6\n  iph->saddr    = rt->rt_src;\n  iph->daddr    = rt->rt_dst;\n  ip_send_check(iph);\n  ...\n  return NF_HOOK(PF_INET, NF_IP_LOCAL_OUT, skb, NULL,\n                 rt->u.dst.dev, dst_output);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-protocol-stack-dev-queue",
+          "title": "dev_queue_xmit() — network device",
+          "type": "code",
+          "description": "dev_queue_xmit() is the final kernel step before the packet reaches the NIC. It enqueues the sk_buff on the device's transmit queue (qdisc), triggers the device's hard_start_xmit method, and handles queue-full conditions by dropping or congesting.",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "net/core/dev.c",
+            "line": 2464,
+            "snippet": "int dev_queue_xmit(struct sk_buff *skb)\n{\n  struct net_device *dev = skb->dev;\n  struct netdev_queue *txq;\n  struct Qdisc *q;\n  ...\n  txq = dev_pick_tx(dev, skb);\n  q = rcu_dereference(txq->qdisc);\n  ...\n  rc = q->enqueue(skb, q);\n  ...\n  __qdisc_run(q);   // → hard_start_xmit\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-protocol-stack-receive-path",
+          "title": "Receive path overview",
+          "type": "concept",
+          "description": "The receive path is the mirror image: the NIC raises an interrupt, the driver calls netif_rx() or napi_gro_receive(), the packet traverses the IP layer (ip_rcv()), the TCP layer (tcp_v4_rcv()), and finally is enqueued on the socket's receive queue (sk->sk_receive_queue) where it waits for the application to call recv().",
+          "data_structures": ["sk_buff", "sock"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-return-path",
+      "title": "Return Path",
+      "description": "After the socket object is fully initialized, sock_map_fd() returns the new file descriptor. sys_socket() returns this fd through the syscall return path back to user space. The application can now use this fd with bind(), connect(), send(), recv(), and other socket operations.",
+      "data_structures": ["task_struct", "file", "socket"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "socket-return-fd-value",
+          "title": "File descriptor return value",
+          "type": "data",
+          "description": "The return value from socket() is a non-negative integer file descriptor (typically 3 or higher, since 0-2 are stdin/stdout/stderr). This fd indexes into the process's file descriptor table, where the entry points to a struct file whose private_data is the struct socket.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-return-sysret",
+          "title": "Syscall return — sysret",
+          "type": "code",
+          "description": "sys_socket() returns the fd to the syscall dispatch in entry_64.S. The RESTORE_ARGS macro reloads the saved user-space registers, and the sysretq instruction atomically restores %rip, %rflags, and switches back to ring 3. The C library wrapper receives the fd in %rax.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-return-usage",
+          "title": "User space usage pattern",
+          "type": "concept",
+          "description": "The typical usage pattern is: fd = socket(AF_INET, SOCK_STREAM, 0); bind(fd, &local_addr, ...); connect(fd, &remote_addr, ...); send(fd, buf, len, 0); recv(fd, buf, len, 0); close(fd). Each call routes through the socket's proto_ops and then the transport protocol's proto vectors.",
+          "data_structures": ["task_struct", "socket"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

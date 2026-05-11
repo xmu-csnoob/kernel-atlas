@@ -1,0 +1,345 @@
+{
+  "id": "ioctl",
+  "name": "ioctl()",
+  "description": "在文件描述符上执行设备特定的输入/输出操作。与处理通用字节流的read()和write()不同，ioctl()向设备驱动传递命令码和可选参数，实现终端配置、查询设备能力或执行自定义硬件命令等控制操作。",
+  "signature": "int ioctl(int fd, unsigned long request, ...)",
+  "entry_point_file": "fs/ioctl.c",
+  "main_flow": [
+    {
+      "id": "ioctl-user-space",
+      "title": "用户空间",
+      "description": "用户空间程序通过C库封装函数（glibc）调用ioctl(fd, request, argp)，将系统调用号（x86-64上NR_ioctl = 16）放入%rax寄存器，文件描述符放入%rdi，命令码放入%rsi，参数指针放入%rdx，然后执行syscall指令陷入内核。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "ioctl-user-space-glibc",
+          "title": "glibc ioctl()封装函数",
+          "type": "concept",
+          "description": "GNU C库为原始系统调用提供了一个变参封装层。它将请求码和参数打包到寄存器中：%rax = __NR_ioctl (16)，%rdi = fd，%rsi = request，%rdx = arg。请求码使用_IOC宏编码方向（读/写/无）、大小、类型和编号。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-user-space-request-encoding",
+          "title": "ioctl请求编码",
+          "type": "concept",
+          "description": "请求参数使用_IOC宏编码：位0-7保存命令编号，位8-15保存类型（'magic'），位16-29保存参数结构体的大小，位30-31保存方向（_IOC_NONE、_IOC_WRITE、_IOC_READ、_IOC_READ|_IOC_WRITE）。驱动使用这些位来验证请求。",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-user-space-syscall-insn",
+          "title": "syscall指令",
+          "type": "code",
+          "description": "syscall指令原子性地将%rip和%rflags保存到MSR_LSTAR定义的内核入口地址，切换到ring 0，并从TSS加载内核栈指针。控制权跳转到entry_64.S中的system_call入口点。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-kernel-entry",
+      "title": "内核入口",
+      "description": "CPU现在处于ring 0。通用系统调用分派表将NR_ioctl路由到fs/ioctl.c中定义的sys_ioctl()。内核验证文件描述符，从进程文件表中获取struct file指针，并开始ioctl分派链。",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "ioctl-kernel-entry-system-call",
+          "title": "system_call入口点",
+          "type": "code",
+          "description": "entry_64.S保存所有通用寄存器，重新开启中断，然后调用sys_call_table[%rax]分派到正确的系统调用处理函数。对于NR_ioctl (16)，这会调用sys_ioctl()。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  SAVE_ARGS 8,0\n  movq %rax,ORIG_RAX-ARGOFFSET(%rsp)\n  call *sys_call_table(,%rax,8)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-kernel-entry-sys-ioctl",
+          "title": "SYSCALL_DEFINE3(ioctl, ...)",
+          "type": "code",
+          "description": "sys_ioctl()是ioctl的顶层内核入口。它调用fget_light()从当前进程的文件描述符表中查找struct file，验证fd，然后调用do_vfs_ioctl()，传入文件、命令码和参数。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 590,
+            "snippet": "SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)\n{\n  struct file *filp;\n  int error;\n  int fput_needed;\n\n  filp = fget_light(fd, &fput_needed);\n  if (!filp)\n    return -EBADF;\n  error = vfs_ioctl(filp, cmd, arg);\n  fput_light(filp, fput_needed);\n  return error;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-kernel-entry-fget",
+          "title": "fget_light() — fd到struct file",
+          "type": "code",
+          "description": "fget_light()遍历task_struct->files->fdt->fd[fd]以返回struct file指针，当文件表未被共享时无需获取完整引用。对于ioctl，文件必须已打开（任何模式均可，因为ioctl与模式无关）。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/file_table.c",
+            "line": 326,
+            "snippet": "struct file *fget_light(unsigned int fd, int *fput_needed)\n{\n  struct file *file;\n  struct files_struct *files = current->files;\n  *fput_needed = 0;\n  if (likely((atomic_read(&files->count) == 1))) {\n    file = fcheck_files(files, fd);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-vfs",
+      "title": "VFS层",
+      "description": "VFS ioctl层（vfs_ioctl和do_vfs_ioctl）在分派到设备特定处理程序之前，处理适用于所有文件类型的通用ioctl命令。它处理常规文件的FIONREAD、FIOASYNC和FIGETBSZ等命令，然后回退到文件的unlocked_ioctl方法处理驱动特定命令。",
+      "data_structures": ["file", "inode"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "ioctl-vfs-vfs-ioctl",
+          "title": "vfs_ioctl()",
+          "type": "code",
+          "description": "vfs_ioctl()是一个薄封装层，调用do_vfs_ioctl()。它的存在是为了提供一致的VFS接口，可以直接从内核代码调用而无需经过系统调用路径。",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 575,
+            "snippet": "int vfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)\n{\n  return do_vfs_ioctl(filp, cmd, arg);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-vfs-do-vfs-ioctl",
+          "title": "do_vfs_ioctl() — 通用命令",
+          "type": "code",
+          "description": "do_vfs_ioctl()在设备特定分派之前处理通用ioctl命令。对于常规文件，它处理FIONREAD（可用字节数）、FIGETBSZ（块大小）、FIOASYNC（异步I/O）和FIOCLEX（执行时关闭）。对于未处理的命令，它回退到filp->f_op->unlocked_ioctl。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 500,
+            "snippet": "static long do_vfs_ioctl(struct file *filp, unsigned int cmd,\n\t\t\t unsigned long arg)\n{\n  int error = 0;\n  switch (cmd) {\n  case FIOCLEX:\n    set_close_on_exec(filp->f_dentry->d_inode->i_fd, 1);\n    break;\n  case FIONCLEX:\n    ...\n  case FIONREAD:\n    error = put_user(inode->i_size - filp->f_pos,\n\t\t     (int __user *)arg);\n    break;\n  ...\n  default:\n    if (S_ISREG(inode->i_mode))\n      error = file_ioctl(filp, cmd, arg);\n    else\n      error = vfs_ioctl(filp, cmd, arg);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-vfs-file-ioctl",
+          "title": "file_ioctl() — 常规文件ioctl",
+          "type": "code",
+          "description": "file_ioctl()处理常规文件特定的ioctl命令，如FIBMAP（块映射）、FIGETBSZ（文件系统块大小）和FIONREAD。对于不认识的命令，它通过filp->f_op->unlocked_ioctl分派到文件系统的ioctl方法。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/ioctl.c",
+            "line": 430,
+            "snippet": "static long file_ioctl(struct file *filp, unsigned int cmd,\n\t\t       unsigned long arg)\n{\n  struct inode *inode = filp->f_dentry->d_inode;\n  int error;\n\n  switch (cmd) {\n  case FIBMAP: ...\n  case FIGETBSZ:\n    return put_user(inode->i_sb->s_blocksize,\n\t\t    (int __user *)arg);\n  ...\n  default:\n    if (filp->f_op && filp->f_op->unlocked_ioctl)\n      return filp->f_op->unlocked_ioctl(filp, cmd, arg);\n    return -ENOTTY;\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-vfs-unlocked-ioctl",
+          "title": "unlocked_ioctl函数指针",
+          "type": "data",
+          "description": "struct file_operations包含unlocked_ioctl函数指针，这是现代的ioctl入口点，不持有大内核锁（BKL）。每个设备驱动或文件系统填写此指针为自己的ioctl处理程序。VFS调用它时传入struct file、命令码和用户参数。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 1516,
+            "snippet": "struct file_operations {\n  struct module *owner;\n  loff_t (*llseek) (struct file *, loff_t, int);\n  ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);\n  ...\n  long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);\n  long (*compat_ioctl) (struct file *, unsigned int, unsigned long);\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-device-handler",
+      "title": "设备处理程序",
+      "description": "设备驱动的unlocked_ioctl处理程序接收命令码和参数。对于字符设备（如tty、块设备、网络接口），处理程序解释命令、验证参数指针并执行设备特定操作。这是ioctl真正工作的地方。",
+      "data_structures": ["file", "inode"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "ioctl-device-tty-ioctl",
+          "title": "tty ioctl示例 — tty_ioctl()",
+          "type": "code",
+          "description": "tty层是ioctl使用的典型示例。tty_ioctl()处理终端配置命令，如TCGETS（获取termios）、TCSETS（设置termios）、TIOCGWINSZ（获取窗口大小）和TIOCSWINSZ（设置窗口大小）。每个命令修改或查询tty驱动的内部状态。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "drivers/tty/tty_ioctl.c",
+            "line": 620,
+            "snippet": "int tty_ioctl(struct inode *inode, struct file *file,\n\t      unsigned int cmd, unsigned long arg)\n{\n  struct tty_struct *tty = file->private_data;\n  int retval;\n\n  switch (cmd) {\n  case TCGETS:\n    retval = copy_to_user((void __user *)arg, &tty->termios,\n\t\t\t  sizeof(struct termios));\n    break;\n  case TCSETS:\n    retval = copy_from_user(&tty->termios, (void __user *)arg,\n\t\t\t    sizeof(struct termios));\n    tty_set_termios(tty, &tty->termios);\n    break;\n  ...\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-device-block-ioctl",
+          "title": "块设备ioctl — blkdev_ioctl()",
+          "type": "code",
+          "description": "块设备ioctl处理BLKGETSIZE（获取设备扇区数）、BLKSSZGET（获取逻辑块大小）、BLKFLSBUF（刷新缓冲区）和BLKRRPART（重新读取分区表）等命令。blkdev_ioctl()根据块设备的能力验证请求，并调用块层或特定驱动的ioctl处理程序。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "block/ioctl.c",
+            "line": 180,
+            "snippet": "int blkdev_ioctl(struct inode *inode, struct file *file,\n\t\t unsigned cmd, unsigned long arg)\n{\n  struct block_device *bdev = inode->i_bdev;\n  struct gendisk *disk = bdev->bd_disk;\n\n  switch (cmd) {\n  case BLKGETSIZE:\n    return put_user(bdev->bd_inode->i_size >> 9,\n\t\t    (unsigned long __user *)arg);\n  case BLKSSZGET:\n    return put_user(bdev_logical_block_size(bdev),\n\t\t    (int __user *)arg);\n  case BLKFLSBUF:\n    ...\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-device-net-ioctl",
+          "title": "网络设备ioctl — sock_ioctl()",
+          "type": "code",
+          "description": "网络相关ioctl通过套接字层处理。sock_ioctl()处理SIOCGIFADDR（获取接口地址）、SIOCSIFADDR（设置接口地址）、SIOCGIFFLAGS（获取接口标志）和SIOCETHTOOL（ethtool操作）等命令。这些命令通过net_device结构体操作网络设备配置。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 890,
+            "snippet": "static long sock_ioctl(struct file *file, unsigned cmd, unsigned long arg)\n{\n  struct socket *sock;\n  int err;\n  ...\n  switch (cmd) {\n  case FIOSETOWN:\n  case SIOCSPGRP:\n    err = -EFAULT;\n    if (get_user(pid, (int __user *)arg))\n      break;\n    f_setown(sock->file, pid, 1);\n    break;\n  case SIOCGIFCONF:\n  case SIOCGIFFLAGS:\n  case SIOCSIFFLAGS:\n    err = dev_ioctl(cmd, (void __user *)arg);\n    break;\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-device-private-data",
+          "title": "file->private_data — 驱动上下文",
+          "type": "data",
+          "description": "设备驱动在open方法中将每次打开的设备特定上下文存储在file->private_data中。ioctl处理程序检索此指针以访问设备特定状态。例如，tty驱动存储tty_struct指针，而自定义字符设备可能存储包含硬件寄存器、DMA缓冲区或配置状态的驱动特定结构体。",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 910,
+            "snippet": "struct file {\n  ...\n  void\t\t\t*private_data;\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-data-copy",
+      "title": "数据复制",
+      "description": "当ioctl命令涉及在用户空间和内核空间之间传输数据时，设备处理程序使用copy_from_user()安全地读取用户参数，使用copy_to_user()返回结果。这些函数验证用户指针，优雅地处理页错误，并使用优化的x86字符串指令执行实际复制。",
+      "data_structures": ["task_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "ioctl-data-copy-from-user",
+          "title": "copy_from_user() — 用户到内核",
+          "type": "code",
+          "description": "copy_from_user()安全地将数据从用户空间指针复制到内核缓冲区。它首先调用access_ok()验证用户指针是否在有效的用户地址范围内，然后使用优化的x86字符串指令执行复制。如果复制期间发生页错误，它返回未复制的字节数而不会崩溃。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/lib/usercopy_64.c",
+            "line": 46,
+            "snippet": "unsigned long\ncopy_from_user(void *to, const void __user *from, unsigned long n)\n{\n  if (likely(access_ok(VERIFY_READ, from, n)))\n    n = __copy_from_user(to, from, n);\n  return n;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-data-copy-to-user",
+          "title": "copy_to_user() — 内核到用户",
+          "type": "code",
+          "description": "copy_to_user()安全地将数据从内核缓冲区复制到用户空间指针。与copy_from_user()类似，它在复制之前使用access_ok()验证目标指针。对于返回数据的ioctl命令（如TCGETS、BLKGETSIZE），驱动填充内核端结构体并使用copy_to_user()将其传输到调用者的缓冲区。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/lib/usercopy_64.c",
+            "line": 35,
+            "snippet": "unsigned long\ncopy_to_user(void __user *to, const void *from, unsigned long n)\n{\n  if (likely(access_ok(VERIFY_WRITE, to, n)))\n    n = __copy_to_user(to, from, n);\n  return n;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-data-put-user",
+          "title": "put_user() / get_user() — 标量值",
+          "type": "code",
+          "description": "对于简单的标量值（int、long、pointer），驱动使用更轻量的put_user()和get_user()宏，而不是copy_to_user/copy_from_user。这些宏内联access_ok检查并使用单个mov指令进行传输，避免了小数据量时的函数调用开销。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/uaccess_64.h",
+            "line": 55,
+            "snippet": "#define put_user(x, ptr) ({\n  __typeof__(*(ptr)) __pus_tmp = x;\n  long __pu_err = -EFAULT;\n  might_sleep();\n  switch (sizeof(*(ptr))) {\n  case 1: __put_user_asm(x, ptr, __pu_err, \"b\"); break;\n  case 2: __put_user_asm(x, ptr, __pu_err, \"w\"); break;\n  case 4: __put_user_asm(x, ptr, __pu_err, \"l\"); break;\n  case 8: __put_user_asm(x, ptr, __pu_err, \"q\"); break;\n  }\n  __pu_err;\n})"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-data-access-ok",
+          "title": "access_ok() — 用户指针验证",
+          "type": "code",
+          "description": "access_ok()是所有用户空间内存访问的守门人。它检查用户指针和大小是否落在有效的用户地址范围内（x86-64上低于TASK_SIZE，即0x00007fffffffffff）。这防止内核代码意外解引用从用户空间传递的内核地址。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/uaccess.h",
+            "line": 45,
+            "snippet": "#define access_ok(type, addr, size) ({\n  __chk_user_ptr(addr);\n  (likely(__range_not_ok(addr, size, TASK_SIZE) == 0));\n})"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "ioctl-return-path",
+      "title": "返回路径",
+      "description": "设备处理程序返回一个整数结果（0表示成功，负errno表示错误）。该结果通过VFS层（do_vfs_ioctl → vfs_ioctl → sys_ioctl）传播，经过entry_64.S中的系统调用返回路径，最终作为ioctl()的返回值返回给用户空间调用者。",
+      "data_structures": ["task_struct", "file"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "ioctl-return-error-codes",
+          "title": "常见ioctl错误码",
+          "type": "concept",
+          "description": "ioctl()可以返回多个标准错误码：-EBADF（无效fd）、-ENOTTY（fd不支持ioctl，即没有unlocked_ioctl处理程序）、-EINVAL（无效命令或参数）、-EFAULT（错误用户指针）、-ENOMEM（内存不足）、-EACCES（权限拒绝）和-ENODEV（无此设备）。驱动也可以返回自定义错误。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-return-syscall-exit",
+          "title": "系统调用返回 — sysret",
+          "type": "code",
+          "description": "sys_ioctl()将结果（0或负errno）返回给entry_64.S中的系统调用分派代码。RESTORE_ARGS宏重新加载保存的用户空间寄存器，sysretq指令原子性地恢复%rip、%rflags并切换回ring 3。C库封装函数在%rax中接收返回值。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "ioctl-return-fput",
+          "title": "fput_light() — 释放文件引用",
+          "type": "code",
+          "description": "返回之前，sys_ioctl()调用fput_light()释放fget_light()获取的引用。如果文件表未共享（常见情况），这是无操作。如果共享，则递减引用计数，如果达到零则释放struct file。",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "fs/file_table.c",
+            "line": 355,
+            "snippet": "void fput_light(struct file *file, int fput_needed)\n{\n  if (fput_needed)\n    fput(file);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

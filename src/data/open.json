@@ -1,0 +1,354 @@
+{
+  "id": "open",
+  "name": "open()",
+  "description": "Opens a file by pathname and returns a file descriptor. The kernel resolves the path through the dentry cache, creates or looks up the inode, performs permission checks, allocates a file descriptor, and installs the new struct file into the process's file table.",
+  "signature": "int open(const char *pathname, int flags, mode_t mode)",
+  "entry_point_file": "fs/open.c",
+  "main_flow": [
+    {
+      "id": "open-user-space",
+      "title": "User Space",
+      "description": "The user-space program invokes open(\"./passwd\", O_RDONLY) via the C library wrapper (glibc), which places the syscall number (NR_open = 2 on x86-64) in %rax and the arguments in %rdi, %rsi, %rdx, then executes the syscall instruction to trap into the kernel.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "open-user-space-glibc",
+          "title": "glibc open() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a thin wrapper around the raw syscall. It sets up the ABI-defined calling convention: %rax = __NR_open (2), %rdi = pathname pointer, %rsi = flags, %rdx = mode. No kernel involvement yet — this is pure user-space setup.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags into MSR_LSTAR-defined kernel entry, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-user-space-pathname",
+          "title": "Pathname in user memory",
+          "type": "data",
+          "description": "The pathname string (e.g., \"./passwd\") resides in the user-space process's address space. The kernel must copy it into kernel space during path lookup to safely traverse the filesystem. The getname() helper performs this copy and checks for valid path characters.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "open-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The CPU is now in ring 0. The generic syscall dispatch table routes NR_open to sys_open(), which calls do_sys_open(). The kernel copies the pathname from user space, then begins the process of opening the file.",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "open-kernel-entry-system-call",
+          "title": "system_call entry point",
+          "type": "code",
+          "description": "entry_64.S saves all general-purpose registers, re-enables interrupts, then calls sys_call_table[%rax] to dispatch to the correct syscall handler. For NR_open (2), this calls sys_open().",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  SAVE_ARGS 8,0\n  movq %rax,ORIG_RAX-ARGOFFSET(%rsp)\n  call *sys_call_table(,%rax,8)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-kernel-entry-sys-open",
+          "title": "SYSCALL_DEFINE3(open, ...)",
+          "type": "code",
+          "description": "sys_open() is defined with the SYSCALL_DEFINE3 macro in fs/open.c. It calls do_sys_open(), passing the flags, mode, and a temporary kernel-space copy of the pathname obtained via getname().",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/open.c",
+            "line": 1030,
+            "snippet": "SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, int, mode)\n{\n  long ret;\n\n  if (force_o_largefile())\n    flags |= O_LARGEFILE;\n\n  ret = do_sys_open(AT_FDCWD, filename, flags, mode);\n  return ret;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-kernel-entry-do-sys-open",
+          "title": "do_sys_open()",
+          "type": "code",
+          "description": "do_sys_open() is the central open dispatcher. It calls get_unused_fd_flags() to reserve a file descriptor slot, then calls do_filp_open() to create and initialize the struct file. Finally it calls fd_install() to bind the fd to the file in the process's file table.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/open.c",
+            "line": 1031,
+            "snippet": "long do_sys_open(int dfd, const char __user *filename, int flags, int mode)\n{\n  char *tmp = getname(filename);\n  int fd = PTR_ERR(tmp);\n\n  if (!IS_ERR(tmp)) {\n    fd = get_unused_fd_flags(flags);\n    if (fd >= 0) {\n      struct file *f = do_filp_open(dfd, tmp, flags, mode, 0);\n      fd_install(fd, f);\n    }\n    putname(tmp);\n  }\n  return fd;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "open-path-lookup",
+      "title": "Path Lookup",
+      "description": "The kernel resolves the pathname by walking each component (\"./\" → \"passwd\") through the filesystem hierarchy. Starting from the current working directory's dentry, it follows each path segment, checking mount points and symbolic links along the way.",
+      "data_structures": ["dentry", "inode", "vfsmount"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "open-path-lookup-do-path-lookup",
+          "title": "do_path_lookup()",
+          "type": "code",
+          "description": "do_path_lookup() is the main pathname resolution engine. It initializes a nameidata struct with the starting dentry (current->fs->pwd.dentry), then calls link_path_walk() to iterate over each path component.",
+          "data_structures": ["dentry", "vfsmount"],
+          "source_ref": {
+            "file": "fs/namei.c",
+            "line": 1077,
+            "snippet": "static int do_path_lookup(int dfd, const char *name,\n  unsigned int flags, struct nameidata *nd)\n{\n  int retval = path_init(dfd, name, flags, nd);\n  if (!retval)\n    retval = path_walk(name, nd);\n  if (unlikely(!retval && !audit_dummy_context()))\n    audit_inode(name, nd->path.dentry);\n  return retval;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-path-lookup-link-path-walk",
+          "title": "link_path_walk()",
+          "type": "code",
+          "description": "link_path_walk() iterates over each path component separated by '/'. For each component it calls do_lookup() to resolve the name in the current directory, handling '.' (current dir), '..' (parent dir), and regular names.",
+          "data_structures": ["dentry", "inode"],
+          "source_ref": {
+            "file": "fs/namei.c",
+            "line": 1570,
+            "snippet": "static int link_path_walk(const char *name, struct nameidata *nd)\n{\n  struct path next;\n  struct inode *inode;\n  int err;\n\n  while (*name=='/')\n    name++;\n  if (!*name)\n    return 0;\n\n  for(;;) {\n    struct qstr this;\n    unsigned int c;\n\n    err = exec_permission_lite(inode);\n    ...\n    err = do_lookup(nd, &this, &next);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-path-lookup-nameidata",
+          "title": "struct nameidata",
+          "type": "data",
+          "description": "nameidata is the central state structure for pathname resolution. It tracks the current path (dentry + vfsmount), the last component's name, the lookup intent (create, open, etc.), and symlink recursion depth.",
+          "data_structures": ["dentry", "vfsmount"],
+          "source_ref": {
+            "file": "include/linux/namei.h",
+            "line": 55,
+            "snippet": "struct nameidata {\n  struct path path;\n  struct qstr last;\n  struct path root;\n  unsigned int flags;\n  int last_type;\n  unsigned depth;\n  char *saved_names[MAX_NESTED_LINKS + 1];\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "open-dentry-cache",
+      "title": "Dentry Cache",
+      "description": "For each path component, the kernel first checks the dentry cache (dcache) to see if the component has been looked up before. A cache hit avoids expensive filesystem operations. On a miss, a new dentry is allocated and linked into the cache.",
+      "data_structures": ["dentry", "inode"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "open-dcache-d-lookup",
+          "title": "d_lookup()",
+          "type": "code",
+          "description": "d_lookup() searches the dentry hash table for a matching name under the parent dentry. The hash is computed from the parent pointer and the component name. On a hit, the existing dentry is returned with its reference count incremented.",
+          "data_structures": ["dentry"],
+          "source_ref": {
+            "file": "fs/dcache.c",
+            "line": 2050,
+            "snippet": "struct dentry *d_lookup(struct dentry *parent, struct qstr *name)\n{\n  struct dentry *dentry = NULL;\n  unsigned int len = name->len;\n  unsigned int hash = name->hash;\n  const unsigned char *str = name->name;\n  struct hlist_head *head = d_hash(parent, hash);\n  struct hlist_node *node;\n  struct dentry *found = NULL;\n\n  rcu_read_lock();\n  hlist_for_each_entry_rcu(dentry, node, head, d_hash) {\n    ...\n  }\n  rcu_read_unlock();\n  return found;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-dcache-d-alloc",
+          "title": "d_alloc() — cache miss",
+          "type": "code",
+          "description": "On a cache miss, d_alloc() creates a new dentry structure. It allocates memory from the dentry slab cache, initializes the d_name field with the component name, and links the new dentry into the parent's d_subdirs list.",
+          "data_structures": ["dentry", "inode"],
+          "source_ref": {
+            "file": "fs/dcache.c",
+            "line": 1238,
+            "snippet": "struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)\n{\n  struct dentry *dentry;\n  char *dname;\n\n  dentry = kmem_cache_alloc(dentry_cache, GFP_KERNEL);\n  if (!dentry)\n    return NULL;\n\n  if (name->len > DNAME_INLINE_LEN-1) {\n    dname = kmalloc(name->len + 1, GFP_KERNEL);\n    ...\n  }\n  ...\n  dentry->d_parent = dget(parent);\n  list_add(&dentry->d_u.d_child, &parent->d_subdirs);\n  return dentry;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-dcache-dentry-struct",
+          "title": "struct dentry",
+          "type": "data",
+          "description": "struct dentry represents a directory entry in the VFS namespace. It caches the name-to-inode mapping, avoiding repeated filesystem lookups. Key fields include d_inode (the inode pointer), d_parent (parent dentry), d_subdirs (children list), and d_op (dentry operations like d_revalidate).",
+          "data_structures": ["dentry", "inode"],
+          "source_ref": {
+            "file": "include/linux/dcache.h",
+            "line": 128,
+            "snippet": "struct dentry {\n  atomic_t d_count;\n  unsigned int d_flags;\n  spinlock_t d_lock;\n  int d_mounted;\n  struct inode *d_inode;\n  struct hlist_node d_hash;\n  struct dentry *d_parent;\n  struct qstr d_name;\n  struct list_head d_u;\n  const struct dentry_operations *d_op;\n  struct super_block *d_sb;\n  unsigned long d_time;\n  void *d_fsdata;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "open-inode-permission",
+      "title": "Inode & Permission",
+      "description": "Once the final dentry is resolved, the kernel retrieves or creates the inode (via the filesystem's lookup or iget_locked). It then performs permission checks: filesystem-level ACLs, SELinux/AppArmor MAC checks, and standard Unix permission bits (rwx) against the process's UID/GID.",
+      "data_structures": ["inode", "task_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "open-inode-iget-locked",
+          "title": "iget_locked()",
+          "type": "code",
+          "description": "iget_locked() looks up an inode in the inode cache by superblock and inode number. If not found, it allocates a new inode from the filesystem's inode slab, initializes it, and inserts it into the inode hash table. The filesystem then fills in the inode via its read_inode method.",
+          "data_structures": ["inode"],
+          "source_ref": {
+            "file": "fs/inode.c",
+            "line": 878,
+            "snippet": "struct inode *iget_locked(struct super_block *sb, unsigned long ino)\n{\n  struct hlist_head *head = inode_hashtable + hash(sb, ino);\n  struct inode *inode;\n\n  spin_lock(&inode_lock);\n  inode = find_inode(sb, head, test, &ino);\n  if (inode) {\n    __iget(inode);\n    spin_unlock(&inode_lock);\n    wait_on_inode(inode);\n    return inode;\n  }\n  ...\n  inode = alloc_inode(sb);\n  ...\n  inode->i_ino = ino;\n  inode->i_state = I_LOCK|I_NEW;\n  hlist_add_head(&inode->i_hash, head);\n  spin_unlock(&inode_lock);\n  return inode;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-inode-may-open",
+          "title": "may_open()",
+          "type": "code",
+          "description": "may_open() is the core permission validation for open(). It checks that the requested access mode (read/write) is compatible with the file's type and permissions, verifies the inode's UID/GID against the process's credentials, and enforces mandatory access control (MAC) policies.",
+          "data_structures": ["inode", "task_struct"],
+          "source_ref": {
+            "file": "fs/namei.c",
+            "line": 2312,
+            "snippet": "static int may_open(struct nameidata *nd, int acc_mode, int flag)\n{\n  struct dentry *dentry = nd->path.dentry;\n  struct inode *inode = dentry->d_inode;\n  int error;\n\n  if (!inode)\n    return -ENOENT;\n\n  if (S_ISLNK(inode->i_mode))\n    return -ELOOP;\n  if (S_ISDIR(inode->i_mode) && (flag & FMODE_WRITE))\n    return -EISDIR;\n\n  error = vfs_permission(nd, acc_mode);\n  if (error)\n    return error;\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-inode-permission-check",
+          "title": "inode_permission()",
+          "type": "code",
+          "description": "inode_permission() performs the standard Unix permission check: it compares the file's mode bits (owner/group/other rwx) against the process's effective UID and GID, following the CAP_DAC_OVERRIDE capability rules for privileged processes.",
+          "data_structures": ["inode", "task_struct"],
+          "source_ref": {
+            "file": "fs/namei.c",
+            "line": 254,
+            "snippet": "int inode_permission(struct inode *inode, int mask)\n{\n  int retval;\n\n  if (mask & MAY_WRITE) {\n    umode_t mode = inode->i_mode;\n    if (IS_RDONLY(inode) &&\n      (S_ISREG(mode) || S_ISDIR(mode) || S_ISLNK(mode)))\n      return -EROFS;\n  }\n\n  if (inode->i_op->permission)\n    retval = inode->i_op->permission(inode, mask);\n  else\n    retval = generic_permission(inode, mask, NULL);\n  if (retval)\n    return retval;\n\n  return security_inode_permission(inode, mask, nd);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "open-fd-allocation",
+      "title": "FD Allocation",
+      "description": "With the inode validated and permissions granted, the kernel allocates a file descriptor and creates a struct file to represent the open file. The file descriptor is installed into the process's file descriptor table, making it visible to user space.",
+      "data_structures": ["task_struct", "file"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "open-fd-get-unused-fd",
+          "title": "get_unused_fd_flags()",
+          "type": "code",
+          "description": "get_unused_fd_flags() searches the process's fdtable for the lowest unused file descriptor number. It starts from current->files->next_fd as a hint for efficiency. If the fdtable is full, it expands the array.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/file.c",
+            "line": 82,
+            "snippet": "int get_unused_fd_flags(unsigned flags)\n{\n  struct files_struct *files = current->files;\n  int fd, error;\n\n  error = expand_files(files, 0);\n  if (error < 0)\n    return error;\n\n  fd = find_next_zero_bit(files->fdt->open_fds->fds_bits,\n    files->fdt->max_fds, files->next_fd);\n\n  FD_SET(fd, files->fdt->open_fds);\n  FD_CLR(fd, files->fdt->close_on_exec);\n  files->next_fd = fd + 1;\n  return fd;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-fd-nameidata-to-filp",
+          "title": "nameidata_to_filp()",
+          "type": "code",
+          "description": "nameidata_to_filp() creates a new struct file from the resolved nameidata. It calls dentry_open() to allocate the file structure, sets up the file operations (f_op) from the inode, initializes the file position to 0, and applies any O_ flags (O_APPEND, O_NONBLOCK, etc.).",
+          "data_structures": ["file", "inode", "dentry"],
+          "source_ref": {
+            "file": "fs/open.c",
+            "line": 935,
+            "snippet": "struct file *nameidata_to_filp(struct nameidata *nd, int flags)\n{\n  const struct cred *cred = current_cred();\n  struct file *filp;\n\n  filp = dentry_open(nd->path.dentry, nd->path.mnt, flags, cred);\n  if (!IS_ERR(filp)) {\n    /* This gets set unconditionally for now */\n    filp->f_pos = 0;\n  }\n  return filp;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-fd-fd-install",
+          "title": "fd_install()",
+          "type": "code",
+          "description": "fd_install() binds the allocated file descriptor number to the struct file pointer in the process's fdtable. After this call, user space can use the fd integer to refer to this open file in subsequent syscalls like read(), write(), and close().",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/open.c",
+            "line": 1018,
+            "snippet": "void fd_install(unsigned int fd, struct file *file)\n{\n  struct files_struct *files = current->files;\n  struct fdtable *fdt;\n\n  spin_lock(&files->file_lock);\n  fdt = files_fdtable(files);\n  BUG_ON(fdt->fd[fd] != NULL);\n  rcu_assign_pointer(fdt->fd[fd], file);\n  spin_unlock(&files->file_lock);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "open-return-path",
+      "title": "Return Path",
+      "description": "sys_open() returns the newly allocated file descriptor number (a small non-negative integer) to user space. The C library wrapper receives it in %rax and returns it to the caller. On error, a negative errno (e.g., -ENOENT, -EACCES) is returned instead.",
+      "data_structures": ["task_struct"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "open-return-do-sys-open",
+          "title": "do_sys_open() returns fd",
+          "type": "code",
+          "description": "do_sys_open() returns the allocated fd to sys_open(), which returns it through the syscall dispatch. If any step failed (path not found, permission denied, too many open files), the error code propagates back instead.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/open.c",
+            "line": 1031,
+            "snippet": "long do_sys_open(int dfd, const char __user *filename, int flags, int mode)\n{\n  char *tmp = getname(filename);\n  int fd = PTR_ERR(tmp);\n\n  if (!IS_ERR(tmp)) {\n    fd = get_unused_fd_flags(flags);\n    if (fd >= 0) {\n      struct file *f = do_filp_open(dfd, tmp, flags, mode, 0);\n      fd_install(fd, f);\n    }\n    putname(tmp);\n  }\n  return fd;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-return-syscall-exit",
+          "title": "Syscall return — sysret",
+          "type": "code",
+          "description": "sys_open() returns the fd (or negative errno) to the syscall dispatch in entry_64.S. The RESTORE_ARGS macro reloads the saved user-space registers, and the sysretq instruction atomically restores %rip, %rflags, and switches back to ring 3. The C library wrapper receives the return value in %rax.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "open-return-user-space",
+          "title": "User space receives fd",
+          "type": "concept",
+          "description": "The user program receives the file descriptor (e.g., fd = 3) as the return value of open(). It can now use this fd in subsequent system calls. The kernel has created all necessary data structures (struct file, dentry, inode reference) that will persist until close() is called.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

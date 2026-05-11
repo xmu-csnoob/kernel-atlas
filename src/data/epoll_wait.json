@@ -1,0 +1,354 @@
+{
+  "id": "epoll_wait",
+  "name": "epoll_wait()",
+  "description": "Waits for I/O events on an epoll file descriptor. The kernel scans the epoll instance's ready list; if events are already available, it copies them to user space immediately. Otherwise, the calling task is placed on the epoll wait queue and sleeps until an event arrives or a timeout expires.",
+  "signature": "int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)",
+  "entry_point_file": "fs/eventpoll.c",
+  "main_flow": [
+    {
+      "id": "epoll-wait-user-space",
+      "title": "User Space",
+      "description": "The user-space program invokes epoll_wait(epfd, events, 128, -1) via the C library wrapper. The wrapper places the syscall number in %rax and the four arguments in %rdi through %r10, then executes the syscall instruction to trap into the kernel. The events array is a user-space buffer that will receive the ready event descriptors.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-user-space-glibc",
+          "title": "glibc epoll_wait() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a thin wrapper around the raw syscall. It sets up the ABI-defined calling convention: %rax = __NR_epoll_wait, %rdi = epfd, %rsi = events pointer, %rdx = maxevents, %r10 = timeout. No kernel involvement yet — this is pure user-space setup.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S, which will dispatch to sys_epoll_wait().",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-user-space-epoll-event",
+          "title": "struct epoll_event layout",
+          "type": "data",
+          "description": "The user provides an array of struct epoll_event objects. Each event contains a 32-bit events mask (EPOLLIN, EPOLLOUT, etc.) and a 64-bit data field (typically the fd or a user pointer). The kernel fills this array with events for ready file descriptors.",
+          "data_structures": [],
+          "source_ref": {
+            "file": "include/linux/eventpoll.h",
+            "line": 58,
+            "snippet": "struct epoll_event {\n  __u32 events;\n  __u64 data;\n} EPOLL_PACKED;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The generic syscall dispatch table routes NR_epoll_wait to sys_epoll_wait() in fs/eventpoll.c. The kernel validates the epoll file descriptor, retrieves the struct file pointer, and accesses the eventpoll struct embedded in file->private_data. It then validates the user-space events buffer and maxevents count.",
+      "data_structures": ["task_struct", "file", "eventpoll"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-kernel-entry-sys-epoll-wait",
+          "title": "SYSCALL_DEFINE4(epoll_wait, ...)",
+          "type": "code",
+          "description": "sys_epoll_wait() is defined with the SYSCALL_DEFINE4 macro in fs/eventpoll.c. It calls fget() to look up the struct file from the current process's file descriptor table, validates that it is an epoll instance, then delegates to do_epoll_wait().",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1321,
+            "snippet": "SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,\n  int, maxevents, int, timeout)\n{\n  int error;\n  struct file *file;\n  struct eventpoll *ep;\n\n  file = fget(epfd);\n  if (!file)\n    return -EBADF;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-kernel-entry-ep-check",
+          "title": "epoll instance validation",
+          "type": "code",
+          "description": "The kernel verifies that the file descriptor refers to an epoll instance by checking file->f_op == &eventpoll_fops. It then casts file->private_data to struct eventpoll*, which is the per-instance data structure containing the ready list, wait queue, and monitored file set.",
+          "data_structures": ["file", "eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1375,
+            "snippet": "ep = file->private_data;\nif (!is_file_epoll(file)) {\n  fput(file);\n  return -EINVAL;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-kernel-entry-do-epoll-wait",
+          "title": "do_epoll_wait() entry",
+          "type": "code",
+          "description": "do_epoll_wait() is the core implementation. It first checks if the ready list (ep->rdllist) is non-empty. If events are already available, it calls ep_send_events() to copy them to user space and returns immediately. Otherwise, it prepares to sleep on the epoll wait queue.",
+          "data_structures": ["eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1116,
+            "snippet": "static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,\n  int maxevents, long timeout)\n{\n  int res, eavail;\n  unsigned long flags;\n  long jtimeout;\n  wait_queue_t wait;\n\n  if (timeout > 0) {\n    jtimeout = timeout;\n  } else if (timeout == 0) {\n    jtimeout = 0;\n  } else {\n    jtimeout = MAX_SCHEDULE_TIMEOUT;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-instance",
+      "title": "Epoll Instance",
+      "description": "The struct eventpoll is the kernel representation of an epoll instance. It contains a red-black tree (rbr) of all monitored file descriptors, a linked list (rdllist) of ready events, a wait queue head for sleeping callers, and a mutex for synchronization. The instance is created by epoll_create() and populated by epoll_ctl().",
+      "data_structures": ["eventpoll", "epitem", "eppoll_entry"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-instance-struct",
+          "title": "struct eventpoll",
+          "type": "data",
+          "description": "struct eventpoll is the core data structure for an epoll instance. The rbr field is a red-black tree containing epitem nodes (one per monitored fd). The rdllist is a doubly-linked list of epitems that have pending events. The wq wait queue head is where epoll_wait() callers sleep.",
+          "data_structures": ["eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 155,
+            "snippet": "struct eventpoll {\n  spinlock_t lock;\n  struct mutex mtx;\n  wait_queue_head_t wq;\n  wait_queue_head_t poll_wait;\n  struct list_head rdllist;\n  struct rb_root rbr;\n  struct epitem *ovflist;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-instance-epitem",
+          "title": "struct epitem — per-fd tracking",
+          "type": "data",
+          "description": "Each monitored file descriptor is represented by an epitem structure. It contains the file pointer, the events mask requested by the user, the user data (epoll_event.data), and linkage into both the red-black tree (rbn) and the ready list (rdllink). The epitem also maintains a list of eppoll_entry objects for wait queue callbacks.",
+          "data_structures": ["epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 120,
+            "snippet": "struct epitem {\n  struct rb_node rbn;\n  struct list_head rdllink;\n  struct epoll_filefd ffd;\n  struct list_head pwqlist;\n  struct eventpoll *ep;\n  struct list_head fllink;\n  struct epoll_event event;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-instance-ep-insert",
+          "title": "ep_insert() — add fd to epoll set",
+          "type": "code",
+          "description": "ep_insert() is called by epoll_ctl(EPOLL_CTL_ADD). It allocates a new epitem, initializes it with the file pointer and events mask, inserts it into the red-black tree, and registers the ep_poll_callback on the target file's wait queue via ep_ptable_queue_proc().",
+          "data_structures": ["eventpoll", "epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 874,
+            "snippet": "static int ep_insert(struct eventpoll *ep,\n  struct epoll_event *event,\n  struct file *tfile, int fd)\n{\n  struct epitem *epi;\n  ...\n  epi = kmem_cache_alloc(epi_cache, GFP_KERNEL);\n  ...\n  ep_rbtree_insert(ep, epi);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-ready-list",
+      "title": "Ready List",
+      "description": "The ready list (rdllist) contains epitem nodes whose file descriptors have pending events matching the requested mask. When epoll_wait() is called, ep_send_events() iterates over rdllist, calls the file's poll method for each entry to determine the exact event mask, copies the results to the user-space events array, and removes the items from the ready list.",
+      "data_structures": ["eventpoll", "epitem"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-ready-list-scan",
+          "title": "ep_send_events() — iterate rdllist",
+          "type": "code",
+          "description": "ep_send_events() is the function that transfers ready events from the kernel to user space. It walks the rdllist linked list, calls ep_item_poll() to get the current event mask for each epitem, and if events match, copies the epoll_event to the user buffer via __put_user().",
+          "data_structures": ["eventpoll", "epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1105,
+            "snippet": "static int ep_send_events(struct eventpoll *ep,\n  struct epoll_event __user *events,\n  int maxevents)\n{\n  int eventcnt = 0;\n  struct list_head *lsthead = &ep->rdllist;\n  ...\n  list_for_each_entry_safe(epi, tmp, lsthead, rdllink) {"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-ready-list-poll",
+          "title": "ep_item_poll() — re-check events",
+          "type": "code",
+          "description": "Before returning an event, ep_send_events() calls ep_item_poll() to re-check the file's current state. This handles the case where an event condition became false between the callback and epoll_wait() (e.g., a read consumed all available data). The poll method returns a bitmask of ready events.",
+          "data_structures": ["epitem", "file"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 685,
+            "snippet": "static unsigned int ep_item_poll(struct epitem *epi, poll_table *pt)\n{\n  pt->key = epi->event.events;\n\n  return epi->ffd.file->f_op->poll(epi->ffd.file, pt) &\n    epi->event.events;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-ready-list-copy",
+          "title": "Copy events to user space",
+          "type": "code",
+          "description": "For each epitem with matching events, ep_send_events() copies the epoll_event structure (events mask + user data) to the user-space events array using __put_user(). It also handles the EPOLLONESHOT flag by clearing the events mask after delivery, and the EPOLLET flag by leaving the item in the ready list for edge-triggered behavior.",
+          "data_structures": ["epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1260,
+            "snippet": "if (__put_user(revents, &uevent->events) ||\n    __put_user(epi->event.data, &uevent->data))\n  return -EFAULT;\n...\nif (epi->event.events & EPOLLONESHOT)\n  epi->event.events &= EP_PRIVATE_BITS;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-wait-queue",
+      "title": "Wait Queue",
+      "description": "If the ready list is empty when epoll_wait() is called, the calling task must sleep until an event arrives. The kernel adds the task to the epoll instance's wait queue (ep->wq) using add_wait_queue_exclusive(). The task enters TASK_INTERRUPTIBLE state and calls schedule() to yield the CPU. It will be woken by ep_poll_callback() when a monitored fd becomes ready, or by a signal, or when the timeout expires.",
+      "data_structures": ["task_struct", "eventpoll", "wait_queue"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-wait-queue-add",
+          "title": "add_wait_queue_exclusive()",
+          "type": "code",
+          "description": "The kernel adds the current task to the epoll instance's wait queue head (ep->wq) with the exclusive flag. Exclusive wakeups ensure that only one waiter is woken per event, which is important for scalability when multiple threads call epoll_wait() on the same epoll instance.",
+          "data_structures": ["task_struct", "eventpoll", "wait_queue"],
+          "source_ref": {
+            "file": "kernel/wait.c",
+            "line": 24,
+            "snippet": "void add_wait_queue_exclusive(wait_queue_head_t *q,\n  wait_queue_t *wait)\n{\n  unsigned long flags;\n  wait->flags |= WQ_FLAG_EXCLUSIVE;\n  spin_lock_irqsave(&q->lock, flags);\n  __add_wait_queue_tail(q, wait);\n  spin_unlock_irqrestore(&q->lock, flags);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-wait-queue-sleep",
+          "title": "schedule_timeout() — sleep until event",
+          "type": "code",
+          "description": "After adding itself to the wait queue, the task sets its state to TASK_INTERRUPTIBLE and calls schedule_timeout(). This yields the CPU. The task will remain asleep until either ep_poll_callback() wakes it (via wake_up()), a signal arrives, or the timeout jiffies expire. The timeout value of -1 means wait indefinitely.",
+          "data_structures": ["task_struct", "eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1330,
+            "snippet": "set_current_state(TASK_INTERRUPTIBLE);\nif (!list_empty(&ep->rdllist) || !jtimeout)\n  break;\n...\njtimeout = schedule_timeout(jtimeout);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-wait-queue-eppoll-entry",
+          "title": "struct eppoll_entry — per-waiter linkage",
+          "type": "data",
+          "description": "Each time epoll_ctl() adds a file descriptor, an eppoll_entry structure is allocated to link the epitem to the target file's wait queue. The eppoll_entry contains a wait_queue_t that is inserted into the file's wait queue, and a pointer back to the epitem so that ep_poll_callback() can find the epoll instance.",
+          "data_structures": ["eppoll_entry", "epitem", "wait_queue"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 180,
+            "snippet": "struct eppoll_entry {\n  struct list_head llink;\n  struct epitem *base;\n  wait_queue_t wait;\n  wait_queue_head_t *whead;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-event-notify",
+      "title": "Event Notify",
+      "description": "When a monitored file descriptor becomes ready (e.g., data arrives on a socket, a pipe has space, a file read completes), the file's poll method or interrupt handler invokes wake_up() on the file's wait queue. This triggers ep_poll_callback(), which checks if the event matches the requested mask, adds the epitem to the epoll ready list (rdllist), and wakes any tasks sleeping on the epoll instance's wait queue.",
+      "data_structures": ["epitem", "eventpoll", "wait_queue"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-event-notify-callback",
+          "title": "ep_poll_callback() — event delivery",
+          "type": "code",
+          "description": "ep_poll_callback() is the wake-up function registered on each monitored file's wait queue. When the file becomes ready, this callback is invoked. It acquires the epoll lock, checks if the event mask matches the epitem's interest mask, adds the epitem to rdllist if not already present, and calls wake_up() on ep->wq to wake sleeping epoll_wait() callers.",
+          "data_structures": ["epitem", "eventpoll", "wait_queue"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 657,
+            "snippet": "static int ep_poll_callback(wait_queue_t *wait,\n  unsigned mode, int sync, void *key)\n{\n  struct epitem *epi = ep_item_from_wait(wait);\n  struct eventpoll *ep = epi->ep;\n  ...\n  if (!list_empty(&epi->rdllink))\n    goto is_linked;\n  list_add_tail(&epi->rdllink, &ep->rdllist);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-event-notify-wake-up",
+          "title": "wake_up() — notify epoll_wait() callers",
+          "type": "code",
+          "description": "After adding the epitem to the ready list, ep_poll_callback() calls wake_up() on the epoll instance's wait queue head (ep->wq). This traverses the wait queue and wakes the first exclusive waiter (or all waiters if non-exclusive). The woken task will return from schedule_timeout() and re-check rdllist in do_epoll_wait().",
+          "data_structures": ["eventpoll", "wait_queue"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1072,
+            "snippet": "if (waitqueue_active(&ep->wq))\n  wake_up_locked(&ep->wq);\nif (waitqueue_active(&ep->poll_wait))\n  wake_up_locked(&ep->poll_wait);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-event-notify-file-ready",
+          "title": "File readiness triggers",
+          "type": "concept",
+          "description": "Different file types trigger ep_poll_callback() through different mechanisms. Network sockets wake via sock_def_readable() when data arrives. Pipes wake via pipe_wake_up() when the write side writes data. Regular files are always considered ready for read/write. Timers wake via timer callback. The common pattern is: condition becomes true → wake_up(&file->wait_queue) → ep_poll_callback().",
+          "data_structures": ["epitem", "wait_queue"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-return-path",
+      "title": "Return Path",
+      "description": "Once events are available (either immediately or after being woken), ep_send_events() copies the epoll_event structures to user space. The syscall returns the number of events delivered (0 on timeout, -1 on error with errno set). The user process can then handle each ready fd — typically by calling read(), write(), or accept() on the returned file descriptors.",
+      "data_structures": ["task_struct", "epitem"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-return-copy",
+          "title": "Copy to user-space events array",
+          "type": "code",
+          "description": "ep_send_events() copies each ready epoll_event to the user-space buffer using __put_user(). The events field contains the ready mask (EPOLLIN, EPOLLOUT, EPOLLERR, etc.) and the data field contains whatever the user registered with epoll_ctl() (typically the fd or a pointer).",
+          "data_structures": ["epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1260,
+            "snippet": "if (__put_user(revents, &uevent->events) ||\n    __put_user(epi->event.data, &uevent->data))\n  return -EFAULT;\nuevent++;\neventcnt++;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-return-syscall-exit",
+          "title": "Syscall return — event count in %rax",
+          "type": "code",
+          "description": "sys_epoll_wait() returns the event count to the syscall dispatch in entry_64.S. The RESTORE_ARGS macro reloads the saved user-space registers, and the sysretq instruction switches back to ring 3. The C library wrapper receives the return value in %rax: positive count = number of events, 0 = timeout, -1 = error (check errno).",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-return-edge-triggered",
+          "title": "EPOLLET edge-triggered semantics",
+          "type": "concept",
+          "description": "With the EPOLLET (edge-triggered) flag, the epitem remains in rdllist after ep_send_events() and is only re-added when a new edge occurs (new data arrives, new connection, etc.). This requires the application to read/write until EAGAIN to avoid missing events. Level-triggered (default) behavior re-checks the fd state on each epoll_wait() call.",
+          "data_structures": ["epitem", "eventpoll"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

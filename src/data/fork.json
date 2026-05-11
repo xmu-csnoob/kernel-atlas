@@ -30,7 +30,7 @@
           "data_structures": ["task_struct"],
           "source_ref": {
             "file": "arch/x86/kernel/entry_64.S",
-            "line": 169,
+            "line": 455,
             "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq  %rsp,PER_CPU_VAR(old_rsp)\n  movq  PER_CPU_VAR(kernel_stack),%rsp"
           },
           "hw_description": null,
@@ -104,8 +104,8 @@
           "data_structures": ["task_struct"],
           "source_ref": {
             "file": "kernel/fork.c",
-            "line": 1070,
-            "snippet": "static struct task_struct *copy_process(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *child_tidptr,\n  struct pid *pid)"
+            "line": 972,
+            "snippet": "static struct task_struct *copy_process(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *child_tidptr,\n  struct pid *pid,\n  int trace)"
           },
           "hw_description": null,
           "svg_asset": null
@@ -197,7 +197,7 @@
           "data_structures": ["files_struct", "task_struct"],
           "source_ref": {
             "file": "kernel/fork.c",
-            "line": 1014,
+            "line": 744,
             "snippet": "static int copy_files(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct files_struct *oldf, *newf;\n  oldf = current->files;\n  if (!oldf)\n    goto out;"
           },
           "hw_description": null,
@@ -211,7 +211,7 @@
           "data_structures": ["signal_struct", "task_struct"],
           "source_ref": {
             "file": "kernel/fork.c",
-            "line": 1021,
+            "line": 796,
             "snippet": "static int copy_sighand(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct sighand_struct *sig;\n  if (clone_flags & CLONE_SIGHAND) {\n    atomic_inc(&current->sighand->count);\n    return 0;\n  }"
           },
           "hw_description": null,
@@ -299,8 +299,8 @@
           "data_structures": ["task_struct"],
           "source_ref": {
             "file": "arch/x86/kernel/entry_64.S",
-            "line": 595,
-            "snippet": "ENTRY(ret_from_fork)\n  DEFAULT_FRAME\n  push %rbp\n  CFI_ADJUST_CFA_OFFSET 8\n  movq %rsp,%rbp\n  CFI_DEF_CFA_REGISTER rbp\n  call schedule_tail"
+            "line": 396,
+            "snippet": "ENTRY(ret_from_fork)\n  DEFAULT_FRAME\n  push kernel_eflags(%rip)\n  CFI_ADJUST_CFA_OFFSET 8\n  popf\n  CFI_ADJUST_CFA_OFFSET -8\n  call schedule_tail"
           },
           "hw_description": null,
           "svg_asset": null
@@ -312,9 +312,9 @@
           "type": "code",
           "data_structures": ["task_struct"],
           "source_ref": {
-            "file": "kernel/fork.c",
-            "line": 1288,
-            "snippet": "/* child gets zero as return value */\n  p->thread.ptrace = 0;\n  /* clear the user-visible return value register */\n  regs->ax = 0;"
+            "file": "arch/x86/kernel/process_64.c",
+            "line": 142,
+            "snippet": "int copy_thread(unsigned long clone_flags, unsigned long sp,\n  unsigned long unused,\n  struct task_struct *p, struct pt_regs *regs)\n{\n  struct pt_regs *childregs;\n  childregs = task_pt_regs(p);\n  *childregs = *regs;\n  childregs->ax = 0;"
           },
           "hw_description": null,
           "svg_asset": null

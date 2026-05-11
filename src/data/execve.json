@@ -1,0 +1,352 @@
+{
+  "id": "execve",
+  "name": "execve()",
+  "description": "Replaces the current process image with a new program. The kernel loads the ELF binary, replaces the memory map, copies arguments and environment strings, resets signal handlers, and jumps to the new program's entry point.",
+  "signature": "int execve(const char *filename, char *const argv[], char *const envp[])",
+  "entry_point_file": "fs/exec.c",
+  "main_flow": [
+    {
+      "id": "execve-user-space",
+      "title": "User Space",
+      "description": "The user-space program calls execve(\"/bin/ls\", argv, envp) via the C library. glibc sets up the argument and environment arrays on the user stack, then executes the syscall instruction to trap into the kernel with the pathname pointer and argument vectors.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "execve-user-space-glibc",
+          "title": "glibc execve() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a thin wrapper around the raw syscall. It sets up the ABI-defined calling convention: %rax = __NR_execve (59), %rdi = filename pointer, %rsi = argv array, %rdx = envp array. The filename string and argument arrays must be in user-accessible memory.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags into MSR_LSTAR-defined kernel entry, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-user-space-args",
+          "title": "argv and envp arrays",
+          "type": "data",
+          "description": "The argv array contains pointers to null-terminated strings on the user stack. The kernel will copy these strings into the new process's stack during setup. envp follows the same layout, providing environment variables like PATH and HOME.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "execve-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The generic syscall dispatch routes NR_execve to sys_execve(), which immediately delegates to do_execve(). The kernel validates the filename pointer, copies the pathname from user space, and begins setting up the binary parameter structure (struct linux_binprm).",
+      "data_structures": ["task_struct", "linux_binprm"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "execve-kernel-entry-sys-execve",
+          "title": "SYSCALL_DEFINE3(execve, ...)",
+          "type": "code",
+          "description": "sys_execve() is defined with the SYSCALL_DEFINE3 macro in fs/exec.c. It calls do_execve() with the user-space filename, argv, and envp pointers. This is the primary entry point for all program execution.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "fs/exec.c",
+            "line": 1480,
+            "snippet": "SYSCALL_DEFINE3(execve,\n  const char __user *, filename,\n  const char __user *const __user *, argv,\n  const char __user *const __user *, envp)\n{\n  return do_execve(filename, argv, envp, current->pt_regs);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-kernel-entry-do-execve",
+          "title": "do_execve() — setup linux_binprm",
+          "type": "code",
+          "description": "do_execve() allocates and initializes a linux_binprm structure. It copies the filename from user space with getname(), then calls search_binary_handler() to find a matching binary format loader.",
+          "data_structures": ["task_struct", "linux_binprm"],
+          "source_ref": {
+            "file": "fs/exec.c",
+            "line": 1285,
+            "snippet": "int do_execve(const char *filename,\n  const char __user *const __user *__argv,\n  const char __user *const __user *__envp,\n  struct pt_regs *regs)\n{\n  struct linux_binprm *bprm;\n  ...\n  bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);\n  ...\n  retval = search_binary_handler(bprm, regs);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-kernel-entry-bprm",
+          "title": "struct linux_binprm",
+          "type": "data",
+          "description": "linux_binprm holds all state needed during exec. It contains the filename, the first 128 bytes of the file (for magic number detection), argument count limits, and the file descriptor of the binary being loaded.",
+          "data_structures": ["linux_binprm"],
+          "source_ref": {
+            "file": "include/linux/binfmts.h",
+            "line": 48,
+            "snippet": "struct linux_binprm {\n  char buf[BINPRM_BUF_SIZE];\n  struct page *page[MAX_ARG_PAGES];\n  struct mm_struct *mm;\n  unsigned long p; /* current top of mem */\n  int sh_bang;\n  struct file *file;\n  ...\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "execve-elf-loader",
+      "title": "ELF Loader",
+      "description": "search_binary_handler() iterates registered binary formats and finds the ELF loader (load_elf_binary). The loader reads the ELF header, validates magic numbers (0x7f 'ELF'), maps program segments (PT_LOAD) into memory, and sets up the interpreter (dynamic linker) if needed.",
+      "data_structures": ["linux_binprm", "elfhdr"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "execve-elf-search-handler",
+          "title": "search_binary_handler()",
+          "type": "code",
+          "description": "search_binary_handler() walks the formats linked list. Each registered loader's load_binary method is called in turn. The ELF loader checks the first 4 bytes of bprm->buf for the ELF magic number (0x7f 'E' 'L' 'F').",
+          "data_structures": ["linux_binprm"],
+          "source_ref": {
+            "file": "fs/exec.c",
+            "line": 1203,
+            "snippet": "int search_binary_handler(struct linux_binprm *bprm,\n  struct pt_regs *regs)\n{\n  struct linux_binfmt *fmt;\n  ...\n  list_for_each_entry(fmt, &formats, lh) {\n    int (*fn)(struct linux_binprm *, ...) = fmt->load_binary;\n    retval = fn(bprm, regs);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-elf-load-elf-binary",
+          "title": "load_elf_binary() — ELF header parse",
+          "type": "code",
+          "description": "load_elf_binary() in fs/binfmt_elf.c reads and validates the ELF header (e_ident, e_type, e_machine), then iterates program headers to find PT_LOAD segments. It calls elf_map() to map each loadable segment at the correct virtual address.",
+          "data_structures": ["linux_binprm", "elfhdr"],
+          "source_ref": {
+            "file": "fs/binfmt_elf.c",
+            "line": 680,
+            "snippet": "static int load_elf_binary(struct linux_binprm *bprm,\n  struct pt_regs *regs)\n{\n  struct elfhdr elf_ex;\n  ...\n  elf_ex = *((struct elfhdr *) bprm->buf);\n  if (memcmp(elf_ex.e_ident, ELFMAG, SELFMAG) != 0)\n    goto out;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-elf-elf-map",
+          "title": "elf_map() — segment mapping",
+          "type": "code",
+          "description": "elf_map() calls do_mmap() to map each PT_LOAD segment into the new address space with the correct permissions (read, write, execute as specified by p_flags). The BSS section is zero-filled beyond the file-backed portion.",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "fs/binfmt_elf.c",
+            "line": 320,
+            "snippet": "static unsigned long elf_map(struct file *filep,\n  unsigned long addr,\n  struct elf_phdr *eppnt,\n  int prot, int type)\n{\n  unsigned long map_addr;\n  map_addr = do_mmap(filep, ELF_PAGESTART(addr), ...);\n  return(map_addr);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-elf-interpreter",
+          "title": "ELF interpreter (dynamic linker)",
+          "type": "concept",
+          "description": "If the ELF file has a PT_INTERP segment (typical for dynamically linked binaries), the kernel loads the interpreter (usually /lib64/ld-linux-x86-64.so.2) and transfers control to it instead of the binary's entry point. The interpreter then resolves shared libraries.",
+          "data_structures": ["linux_binprm"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "execve-mm-replacement",
+      "title": "MM Replacement",
+      "description": "flush_old_exec() tears down the old address space: unmaps all VMAs, releases page tables, and drops references to the old mm_struct. setup_new_exec() then initializes the new mm_struct with the freshly mapped ELF segments, setting up the stack and brk regions.",
+      "data_structures": ["mm_struct", "task_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "execve-mm-flush-old",
+          "title": "flush_old_exec() — tear down old mm",
+          "type": "code",
+          "description": "flush_old_exec() calls exec_mmap() which replaces current->mm with a newly allocated mm_struct. The old mm's reference count is decremented; if it reaches zero, all mappings are torn down via exit_mmap().",
+          "data_structures": ["mm_struct", "task_struct"],
+          "source_ref": {
+            "file": "fs/exec.c",
+            "line": 980,
+            "snippet": "int flush_old_exec(struct linux_binprm * bprm)\n{\n  ...\n  retval = exec_mmap(bprm->mm);\n  if (retval)\n    return retval;\n  bprm->mm = NULL;\n  ...\n  current->sas_ss_sp = current->sas_ss_size = 0;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-mm-exec-mmap",
+          "title": "exec_mmap() — swap mm_struct",
+          "type": "code",
+          "description": "exec_mmap() atomically swaps the old mm_struct for the new one. It drops the old mm reference and activates the new page tables by calling activate_mm(). This is the point of no return — the old memory image is gone.",
+          "data_structures": ["mm_struct", "task_struct"],
+          "source_ref": {
+            "file": "fs/exec.c",
+            "line": 698,
+            "snippet": "static int exec_mmap(struct mm_struct *mm)\n{\n  struct task_struct *tsk;\n  struct mm_struct *old_mm, *active_mm;\n  ...\n  tsk = current;\n  old_mm = current->mm;\n  ...\n  active_mm = tsk->active_mm;\n  tsk->mm = mm;\n  tsk->active_mm = mm;\n  activate_mm(active_mm, mm);\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-mm-setup-new",
+          "title": "setup_new_exec() — initialize new mm",
+          "type": "code",
+          "description": "setup_new_exec() sets the new process personality, adjusts the stack limit (rlimit), and initializes signal stack state. It also sets up the brk region and computes the final stack position for argument copying.",
+          "data_structures": ["mm_struct", "task_struct"],
+          "source_ref": {
+            "file": "fs/exec.c",
+            "line": 1050,
+            "snippet": "void setup_new_exec(struct linux_binprm * bprm)\n{\n  ...\n  current->sas_ss_sp = current->sas_ss_size = 0;\n  ...\n  set_mm_rlimit_stack(bprm->mm, rlimit(RLIMIT_STACK));\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "execve-arg-copy",
+      "title": "Arg/Env Copy",
+      "description": "copy_strings() copies the argv[] and envp[] arrays from user space into the new process's kernel stack pages, then maps them into the top of the new user stack. The kernel builds the argc, argv pointers, and envp pointers that main() expects.",
+      "data_structures": ["linux_binprm", "mm_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "execve-arg-copy-strings",
+          "title": "copy_strings() — copy argv/envp",
+          "type": "code",
+          "description": "copy_strings() iterates over the argv and envp arrays, copying each string from user space into kernel-allocated pages (bprm->page[]). It counts total bytes and enforces ARG_MAX limits. Strings are packed from the top of the stack downward.",
+          "data_structures": ["linux_binprm"],
+          "source_ref": {
+            "file": "fs/exec.c",
+            "line": 390,
+            "snippet": "static int copy_strings(int argc,\n  const char __user *const __user * argv,\n  struct linux_binprm *bprm)\n{\n  ...\n  while (argc-- > 0) {\n    len = strnlen_user(argv[argc], MAX_ARG_STRLEN);\n    ...\n    copy_from_user(kaddr + offset, argv[argc], len);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-arg-create-elf-tables",
+          "title": "create_elf_tables() — stack layout",
+          "type": "code",
+          "description": "create_elf_tables() builds the initial user stack layout: argc, argv[] pointers, envp[] pointers, auxiliary vector (AT_ENTRY, AT_PHDR, AT_PAGESZ, etc.), and finally the argv/envp strings themselves. This is the stack frame that _start in libc sees.",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "fs/binfmt_elf.c",
+            "line": 120,
+            "snippet": "static int create_elf_tables(struct linux_binprm *bprm,\n  struct elfhdr *exec,\n  unsigned long load_addr,\n  unsigned long interp_load_addr)\n{\n  ...\n  put_user(argc, sp++);\n  ...\n  /* argv pointers */\n  /* envp pointers */\n  /* auxv[] */\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-arg-auxv",
+          "title": "Auxiliary vector (auxv)",
+          "type": "data",
+          "description": "The auxiliary vector is an array of (type, value) pairs passed from kernel to userspace via the stack. It includes AT_ENTRY (program entry point), AT_PHDR (program header address), AT_PAGESZ (page size), AT_BASE (interpreter base), and AT_NULL (terminator). The dynamic linker uses these to bootstrap.",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "execve-signal-reset",
+      "title": "Signal Reset",
+      "description": "execve() resets all signal handlers to their default disposition (SIG_DFL) because the old program's signal handlers are meaningless in the new program's context. Pending signals are preserved, but blocked signal masks may be adjusted.",
+      "data_structures": ["task_struct", "sighand_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "execve-signal-flush-handlers",
+          "title": "flush_signal_handlers() — reset to SIG_DFL",
+          "type": "code",
+          "description": "flush_signal_handlers() iterates over all 64 signals and resets each handler to SIG_DFL (default). It also clears the SA_SIGINFO flag. This ensures the new program starts with a clean signal state.",
+          "data_structures": ["sighand_struct"],
+          "source_ref": {
+            "file": "kernel/signal.c",
+            "line": 2800,
+            "snippet": "void flush_signal_handlers(struct task_struct *t,\n  int force_default)\n{\n  int i;\n  struct k_sigaction *ka = &t->sighand->action[0];\n  for (i = _NSIG ; i != 0 ; i--) {\n    if (force_default || ka->sa.sa_handler != SIG_IGN)\n      ka->sa.sa_handler = SIG_DFL;\n    ka->sa.sa_flags = 0;\n    sigemptyset(&ka->sa.sa_mask);\n    ka++;\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-signal-pending",
+          "title": "Pending signals preserved",
+          "type": "data",
+          "description": "Pending signals that were queued before execve() are preserved and delivered to the new program. However, since handlers are reset to SIG_DFL, pending SIGINT will terminate the new program rather than calling a custom handler.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-signal-ignored",
+          "title": "Ignored signals stay ignored",
+          "type": "concept",
+          "description": "Signals that were explicitly set to SIG_IGN (ignore) before execve() remain ignored after execve(). This is a POSIX requirement — for example, SIGCHLD set to SIG_IGN stays ignored so the parent does not need to wait() on child processes.",
+          "data_structures": ["sighand_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "execve-entry-jump",
+      "title": "Entry Jump",
+      "description": "start_thread() sets up the CPU registers for the new program: %rip = ELF entry point, %rsp = top of new stack. The syscall return path restores these registers and executes sysretq, transferring control to the new program's _start in user space. The old process is gone — same PID, new code.",
+      "data_structures": ["task_struct", "pt_regs"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "execve-entry-start-thread",
+          "title": "start_thread() — set CPU context",
+          "type": "code",
+          "description": "start_thread() in arch/x86/kernel/process_64.c sets the new program counter (ip = ELF e_entry), stack pointer (sp = top of new user stack), and segment registers. It also clears debug registers and floating-point state.",
+          "data_structures": ["task_struct", "pt_regs"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process_64.c",
+            "line": 280,
+            "snippet": "void start_thread(struct pt_regs *regs,\n  unsigned long new_ip,\n  unsigned long new_sp)\n{\n  loadsegment(fs, 0);\n  loadsegment(gs, 0);\n  loadsegment(ds, __USER_DS);\n  loadsegment(es, __USER_DS);\n  regs->ip = new_ip;\n  regs->sp = new_sp;\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-entry-syscall-return",
+          "title": "Syscall return — enter new program",
+          "type": "code",
+          "description": "The syscall return path in entry_64.S restores the registers from pt_regs (now containing the new program's entry point and stack) and executes sysretq. The CPU switches back to ring 3, but instead of returning to the old program, it begins executing the new ELF binary's _start.",
+          "data_structures": ["pt_regs"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "execve-entry-new-start",
+          "title": "New program _start",
+          "type": "concept",
+          "description": "The new program begins execution at its ELF entry point. For statically linked binaries this is _start in crt1.o. For dynamically linked binaries it's the interpreter's _start, which resolves shared libraries and then jumps to the binary's real entry point. The process keeps the same PID but is now a completely different program.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

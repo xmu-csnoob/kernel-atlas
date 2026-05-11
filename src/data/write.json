@@ -1,0 +1,416 @@
+{
+  "id": "write",
+  "name": "write()",
+  "description": "Transfers data from a user-space buffer to a file descriptor. The kernel copies data into the page cache, marks pages dirty, and either flushes them synchronously or queues them for background writeback to disk via the block layer and DMA.",
+  "signature": "ssize_t write(int fd, const void *buf, size_t count)",
+  "entry_point_file": "fs/read_write.c",
+  "main_flow": [
+    {
+      "id": "write-user-space",
+      "title": "User Space",
+      "description": "The user-space program invokes write(fd, buf, 4096) via the C library wrapper (glibc), which places the syscall number (NR_write = 1 on x86-64) in %rax and the three arguments in %rdi, %rsi, %rdx, then executes the syscall instruction to trap into the kernel.",
+      "data_structures": ["task_struct", "file"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "write-user-space-glibc",
+          "title": "glibc write() wrapper",
+          "type": "concept",
+          "description": "The GNU C Library provides a thin wrapper around the raw syscall. It sets up the ABI-defined calling convention: %rax = __NR_write (1), %rdi = fd, %rsi = buf, %rdx = count. No kernel involvement yet — this is pure user-space setup.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags into MSR_LSTAR-defined kernel entry, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-user-space-file-table",
+          "title": "File descriptor lookup",
+          "type": "data",
+          "description": "Before the syscall fires, the file descriptor integer is merely an index. The kernel will resolve it against the process's file descriptor table (task_struct->files->fdt->fd[fd]) in the Kernel Entry stage.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-kernel-entry",
+      "title": "Kernel Entry",
+      "description": "The CPU is now in ring 0. The generic syscall dispatch table routes NR_write to sys_write(), which is the kernel implementation of write(). The kernel validates the file descriptor, checks write permissions, and retrieves the struct file pointer from the process file table.",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "write-kernel-entry-system-call",
+          "title": "system_call entry point",
+          "type": "code",
+          "description": "entry_64.S saves all general-purpose registers, re-enables interrupts, then calls sys_call_table[%rax] to dispatch to the correct syscall handler. For NR_write (1), this calls sys_write().",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  SAVE_ARGS 8,0\n  movq %rax,ORIG_RAX-ARGOFFSET(%rsp)\n  call *sys_call_table(,%rax,8)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-kernel-entry-sys-write",
+          "title": "SYSCALL_DEFINE3(write, ...)",
+          "type": "code",
+          "description": "sys_write() is defined with the SYSCALL_DEFINE3 macro in fs/read_write.c. It calls fget_light() to look up the struct file from the current process's file descriptor table, validates the fd is open for writing, then calls vfs_write(file, buf, count, &pos).",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 408,
+            "snippet": "SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf, size_t, count)\n{\n  struct file *file;\n  ssize_t ret = -EBADF;\n  int fput_needed;\n\n  file = fget_light(fd, &fput_needed);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-kernel-entry-fget",
+          "title": "fget_light() — fd to struct file",
+          "type": "code",
+          "description": "fget_light() walks task_struct->files->fdt->fd[fd] to return the struct file pointer without taking a full reference when the file table is not shared. It also verifies FMODE_WRITE is set on the file.",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/file_table.c",
+            "line": 326,
+            "snippet": "struct file *fget_light(unsigned int fd, int *fput_needed)\n{\n  struct file *file;\n  struct files_struct *files = current->files;\n  *fput_needed = 0;\n  if (likely((atomic_read(&files->count) == 1))) {\n    file = fcheck_files(files, fd);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-kernel-entry-pos",
+          "title": "File position tracking",
+          "type": "data",
+          "description": "sys_write() retrieves file->f_pos (the current write offset) and passes a pointer to vfs_write(). After the write succeeds, f_pos is advanced by the number of bytes written, making sequential writes work correctly.",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 417,
+            "snippet": "  if (file) {\n    loff_t pos = file_pos_read(file);\n    ret = vfs_write(file, buf, count, &pos);\n    file_pos_write(file, pos);\n    fput_light(file, fput_needed);\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-vfs",
+      "title": "VFS Layer",
+      "description": "The Virtual File System (VFS) layer provides a uniform interface over all filesystems. vfs_write() performs permission checks, validates the buffer is writable, and then dispatches through the file's f_op->write (or f_op->aio_write) function pointer, which leads into the specific filesystem implementation.",
+      "data_structures": ["file", "inode"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "write-vfs-vfs-write",
+          "title": "vfs_write()",
+          "type": "code",
+          "description": "vfs_write() first calls rw_verify_area() to verify the file region is accessible and the fd is open for writing, then invokes security_file_permission() for mandatory access control. Finally it calls the file-operation write method.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 306,
+            "snippet": "ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)\n{\n  ssize_t ret;\n  if (!(file->f_mode & FMODE_WRITE))\n    return -EBADF;\n  if (!file->f_op || (!file->f_op->write && !file->f_op->aio_write))\n    return -EINVAL;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-vfs-fop-dispatch",
+          "title": "file_operations dispatch",
+          "type": "code",
+          "description": "vfs_write() calls file->f_op->write() if it exists, otherwise falls back to do_sync_write() which wraps the aio_write path. Each filesystem registers its own file_operations struct that implements the write method appropriate for its on-disk layout.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 326,
+            "snippet": "  if (file->f_op->write)\n    ret = file->f_op->write(file, buf, count, pos);\n  else\n    ret = do_sync_write(file, buf, count, pos);\n  if (ret > 0) {\n    fsnotify_modify(file->f_dentry);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-vfs-file-operations-struct",
+          "title": "struct file_operations",
+          "type": "data",
+          "description": "struct file_operations is the central VFS dispatch table. It contains function pointers such as read, write, llseek, mmap, and open. Each filesystem or device driver fills in the methods it supports; the VFS calls through these pointers to reach filesystem-specific code.",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 1516,
+            "snippet": "struct file_operations {\n  struct module *owner;\n  loff_t (*llseek) (struct file *, loff_t, int);\n  ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);\n  ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-vfs-inode",
+          "title": "inode and address_space",
+          "type": "data",
+          "description": "The struct inode carries file metadata (size, permissions, block map). Its i_mapping field points to the struct address_space that manages the page cache for this file. The filesystem write path uses i_mapping to locate cached pages or allocate new ones for writing.",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 748,
+            "snippet": "struct inode {\n  umode_t\t\t\ti_mode;\n  uid_t\t\t\t\ti_uid;\n  gid_t\t\t\t\ti_gid;\n  const struct inode_operations\t*i_op;\n  struct super_block\t*i_sb;\n  struct address_space\t*i_mapping;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-page-cache",
+      "title": "Page Cache",
+      "description": "The filesystem's write method (e.g., generic_file_write) copies user data into the page cache. It uses copy_from_user() to bring bytes into kernel pages, marks them dirty via set_page_dirty(), and may trigger writeback if the dirty page threshold is exceeded or if O_SYNC is set.",
+      "data_structures": ["inode", "address_space"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "write-page-cache-generic-file-write",
+          "title": "generic_file_write() / generic_file_aio_write()",
+          "type": "code",
+          "description": "generic_file_aio_write() is the default write method for buffered I/O. It iterates over the write range, looks up or allocates pages in the page cache, locks them, and prepares for data copy from user space.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/filemap.c",
+            "line": 2408,
+            "snippet": "ssize_t\ngeneric_file_aio_write(struct kiocb *iocb, const struct iovec *iov,\n\t\t\t unsigned long nr_segs, loff_t pos)\n{\n  struct file *file = iocb->ki_filp;\n  struct address_space *mapping = file->f_mapping;\n  ssize_t written;\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-page-cache-copy-from-user",
+          "title": "copy_from_user() — user buf → kernel page",
+          "type": "code",
+          "description": "copy_from_user() safely copies bytes from the user-space buffer into the kernel page. It uses access_ok() to verify the user buffer is valid, then performs an optimized memory copy. If the user pointer is invalid, it returns the number of uncopied bytes without crashing.",
+          "data_structures": ["task_struct", "address_space"],
+          "source_ref": {
+            "file": "arch/x86/lib/usercopy_64.c",
+            "line": 46,
+            "snippet": "unsigned long\ncopy_from_user(void *to, const void __user *from, unsigned long n)\n{\n  if (likely(access_ok(VERIFY_READ, from, n)))\n    n = __copy_from_user(to, from, n);\n  return n;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-page-cache-set-dirty",
+          "title": "set_page_dirty() — mark page modified",
+          "type": "code",
+          "description": "After copying data into the page cache, the kernel marks the page as dirty via set_page_dirty(). This sets the PG_dirty flag on the struct page and records the dirty state in the address_space so the page-writeback thread knows which pages need flushing to disk.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/page-writeback.c",
+            "line": 1311,
+            "snippet": "int set_page_dirty(struct page *page)\n{\n  struct address_space *mapping = page_mapping(page);\n  if (likely(mapping)) {\n    int (*spd)(struct page *) = mapping->a_ops->set_page_dirty;\n    ...\n    return spd(page);\n  }\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-page-cache-page-allocation",
+          "title": "Page cache allocation (cache miss)",
+          "type": "code",
+          "description": "If the target page is not already in the page cache, grab_cache_page_write_begin() allocates a new page frame and inserts it into the address_space radix tree. The page is locked during the write to prevent races with other writers or readpage.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/filemap.c",
+            "line": 2142,
+            "snippet": "struct page *grab_cache_page_write_begin(struct address_space *mapping,\n  pgoff_t index, unsigned flags)\n{\n  int status;\n  struct page *page;\n  gfp_t gfp_notmask = 0;\n  page = find_lock_page(mapping, index);\n  if (page)\n    return page;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-block-layer",
+      "title": "Block Layer",
+      "description": "Dirty pages are flushed to disk by the page-writeback thread (pdflush or per-bdi writeback) or synchronously for O_SYNC writes. The filesystem's writepage method builds BIO descriptors and calls submit_bio() to push write requests through the block layer to the device driver.",
+      "data_structures": ["address_space"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "write-block-writeback-thread",
+          "title": "write_cache_pages() — page writeback",
+          "type": "code",
+          "description": "The writeback thread scans the address_space for dirty pages and calls write_cache_pages(), which iterates over the radix tree, finds dirty pages, locks them, and invokes the filesystem's writepage method to convert each page into a BIO request.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/page-writeback.c",
+            "line": 1038,
+            "snippet": "int write_cache_pages(struct address_space *mapping,\n  struct writeback_control *wbc,\n  writepage_t writepage, void *data)\n{\n  int ret = 0;\n  int done = 0;\n  struct pagevec pvec;\n  int nr_pages;\n  pgoff_t index;\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-block-ext2-writepage",
+          "title": "ext2_writepage / mpage_writepage",
+          "type": "code",
+          "description": "For ext2, the address_space_operations->writepage pointer is set to ext2_writepage, which delegates to mpage_writepage. This function maps logical file blocks to physical disk blocks via ext2_get_block(), then builds a BIO descriptor for the block layer.",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "fs/ext2/inode.c",
+            "line": 778,
+            "snippet": "static int ext2_writepage(struct page *page, struct writeback_control *wbc)\n{\n  return block_write_full_page(page, ext2_get_block, wbc);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-block-submit-bio",
+          "title": "submit_bio() — block layer entry (WRITE)",
+          "type": "code",
+          "description": "submit_bio() is the kernel's universal entry point for block I/O. For writes, it sets the BIO_RW flag to indicate a write operation, increments per-task write accounting, then calls generic_make_request() to route the BIO through the I/O scheduler and ultimately to the device driver.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/blk-core.c",
+            "line": 1552,
+            "snippet": "void submit_bio(int rw, struct bio *bio)\n{\n  int count = bio_sectors(bio);\n  bio->bi_rw |= rw;\n  if (bio_has_data(bio)) {\n    if (rw & WRITE) {\n      task_io_account_write(count << 9);\n    }\n  }\n  generic_make_request(bio);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-block-io-scheduler",
+          "title": "I/O scheduler queue (write path)",
+          "type": "concept",
+          "description": "The I/O scheduler merges and reorders BIO requests to minimize disk head movement. Write requests may be merged with adjacent writes (plugging) to form larger sequential transfers. In Linux 2.6.32 the default is CFQ (Completely Fair Queuing).",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/elevator.c",
+            "line": 474,
+            "snippet": "void elv_insert(struct request_queue *q, struct request *rq, int where)\n{\n  struct list_head *pos;\n  unsigned ordseq;\n  int unplug_it = 1;\n  trace_block_rq_insert(q, rq);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-hardware-io",
+      "title": "Hardware I/O",
+      "description": "The disk controller receives a WRITE DMA EXT command from the device driver. The DMA engine transfers data directly from the kernel page cache page to the disk's internal buffer, after which the drive writes the data to the physical media. A completion interrupt signals the end of the transfer.",
+      "data_structures": [],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "write-hw-ata-command",
+          "title": "Disk controller receives WRITE DMA EXT command",
+          "type": "hardware",
+          "description": "The AHCI or legacy ATA driver writes a command FIS (Frame Information Structure) to the HBA's command slot registers, specifying the LBA, sector count, and the DMA buffer address in system memory. The SATA host controller forwards this command to the disk.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "The AHCI Host Bus Adapter receives a WRITE DMA EXT command via a Command FIS. The PRDT (Physical Region Descriptor Table) entry points to the kernel page frame containing dirty data. The drive's firmware receives the command and prepares to write.",
+          "svg_asset": null
+        },
+        {
+          "id": "write-hw-dma-transfer",
+          "title": "DMA engine transfers data from RAM to disk",
+          "type": "hardware",
+          "description": "The AHCI DMA engine performs a bus-master DMA transfer, reading the sector data directly from the physical address of the kernel page in the page cache and writing it to the disk's internal buffer. The CPU is not involved in moving the data bytes.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "The AHCI HBA's DMA engine reads 512-byte (or 4 KiB native-sector) blocks directly from RAM using PCI bus-master DMA, bypassing the CPU data path entirely. Data flows from system memory → PCIe bus → disk buffer.",
+          "svg_asset": null
+        },
+        {
+          "id": "write-hw-irq",
+          "title": "Transfer complete hardware interrupt",
+          "type": "hardware",
+          "description": "When all sectors have been written to the disk's media (or its volatile cache), the AHCI controller asserts an interrupt on the interrupt line connected to the I/O APIC. The CPU's local APIC routes the interrupt, and the kernel's IRQ handler completes the BIO.",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "The AHCI HBA sets the interrupt status register and asserts IRQ (typically IRQ 11 or MSI vector) after the drive reports command completion. The I/O APIC delivers a fixed-vector interrupt to a CPU, which enters the kernel interrupt handler.",
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-return-path",
+      "title": "Return Path",
+      "description": "For buffered writes, sys_write() returns immediately after copying data to the page cache and marking pages dirty — the actual disk I/O happens asynchronously. For O_SYNC or O_DIRECT writes, the call blocks until the hardware confirms completion. The byte count is returned to user space through the syscall return path.",
+      "data_structures": ["task_struct", "file", "address_space"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "write-return-bio-endio",
+          "title": "bio->bi_end_io callback (async completion)",
+          "type": "code",
+          "description": "For asynchronous writes, the AHCI interrupt handler calls blk_complete_request(), which invokes the BIO's bi_end_io callback. This unlocks the page, clears PG_writeback, and wakes any tasks waiting for sync completion. The page remains in the cache as clean data.",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/blk-core.c",
+            "line": 1819,
+            "snippet": "void blk_finish_request(struct request *req, int error)\n{\n  if (blk_rq_tagged(req))\n    blk_queue_end_tag(req->q, req);\n  BUG_ON(blk_queued_rq(req));\n  if (unlikely(laptop_mode) && blk_fs_request(req))\n    laptop_io_completion();\n  if (req->end_io)\n    req->end_io(req, error);\n  else"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-return-sync-modes",
+          "title": "O_SYNC / fsync() synchronous writeback",
+          "type": "concept",
+          "description": "When O_SYNC is set or fsync() is called, the write path blocks until dirty pages are flushed and the disk reports completion. generic_osync_inode() waits for all writeback on the inode to finish, ensuring data durability before returning to user space.",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "fs/sync.c",
+            "line": 35,
+            "snippet": "int vfs_fsync_range(struct file *file, loff_t start, loff_t end,\n\t\t    int datasync)\n{\n  struct address_space *mapping = file->f_mapping;\n  int err, err2;\n  ...\n  err = filemap_fdatawrite_range(mapping, start, end);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-return-byte-count",
+          "title": "Return bytes written to user space",
+          "type": "code",
+          "description": "sys_write() returns the number of bytes successfully copied into the page cache (or written to disk for sync I/O). For a partial write, it returns the actual count. On error, a negative errno code is placed in %rax.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 422,
+            "snippet": "  if (file) {\n    loff_t pos = file_pos_read(file);\n    ret = vfs_write(file, buf, count, &pos);\n    file_pos_write(file, pos);\n    fput_light(file, fput_needed);\n  }\n  return ret;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-return-syscall-exit",
+          "title": "Syscall return — sysret",
+          "type": "code",
+          "description": "sys_write() returns the byte count (or a negative errno) to the syscall dispatch in entry_64.S. The RESTORE_ARGS macro reloads the saved user-space registers, and the sysretq instruction atomically restores %rip, %rflags, and switches back to ring 3. The C library wrapper receives the return value in %rax.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

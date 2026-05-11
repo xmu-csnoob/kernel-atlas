@@ -1,0 +1,318 @@
+{
+  "id": "brk",
+  "name": "brk()",
+  "description": "将程序中断点（堆段末尾）更改为新地址。内核针对堆边界验证请求地址，更新或创建堆区域的 VMA，如果需要扩展，则分配物理页框并更新页表。",
+  "signature": "int brk(void *addr)",
+  "entry_point_file": "mm/mmap.c",
+  "main_flow": [
+    {
+      "id": "brk-user-space",
+      "title": "用户空间 — 通过 glibc 调用 brk(addr)",
+      "description": "用户程序通过 C 库调用 brk(addr) 或 sbrk(increment)。glibc 的 sbrk() 包装器从当前中断点计算新地址并发起 brk 系统调用。请求地址必须按页对齐，内核才会接受。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "brk-user-space-glibc",
+          "title": "glibc brk() / sbrk() 包装器",
+          "description": "glibc brk() 包装器将请求地址放入 %rdi，系统调用号（x86-64 上 NR_brk = 12）放入 %rax，然后执行 syscall 指令。sbrk(increment) 是一个便利包装器，它从内部变量读取当前中断点，加上增量后调用 brk()。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-user-space-heap-layout",
+          "title": "进程地址空间布局",
+          "description": "堆位于程序 BSS/数据段（低地址）和 mmap 区域（从高地址向下增长）之间。程序中断点标记堆的顶部。brk() 可以收缩堆（addr < 当前 brk）或扩展堆（addr > 当前 brk）。",
+          "type": "concept",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-user-space-syscall",
+          "title": "syscall 指令 — 陷入内核",
+          "description": "syscall 指令保存 %rip 和 %rflags，切换到 ring 0，并跳转到 system_call 入口点。%rax = 12 从系统调用表中选择 sys_brk。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-kernel-entry",
+      "title": "内核入口 — sys_brk()",
+      "description": "mm/mmap.c 中的 sys_brk() 接收请求的中断点地址。它首先将地址舍入到页边界，然后调用核心 do_brk() 逻辑来验证并调整堆 VMA。",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "brk-sys-brk",
+          "title": "SYSCALL_DEFINE1(brk, unsigned long, brk)",
+          "description": "sys_brk() 是系统调用入口点。它调用 mm->brk 获取当前中断点，然后调用核心逻辑设置新中断点。成功时返回值为新的程序中断点，失败时返回当前中断点。",
+          "type": "code",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 290,
+            "snippet": "SYSCALL_DEFINE1(brk, unsigned long, brk)\n{\n  unsigned long rlim, retval;\n  unsigned long newbrk, oldbrk;\n  struct mm_struct *mm = current->mm;\n\n  down_write(&mm->mmap_sem);\n  if (brk < mm->end_code)\n    goto out;\n  newbrk = PAGE_ALIGN(brk);\n  oldbrk = PAGE_ALIGN(mm->brk);\n  if (oldbrk == newbrk)\n    goto set_brk;\n\n  /* Always allow shrinking brk. */\n  if (brk <= mm->brk) {\n    if (!do_munmap(mm, newbrk, oldbrk - newbrk))\n      goto set_brk;\n    goto out;\n  }\n\n  /* Check against rlimit */\n  rlim = rlimit(RLIMIT_DATA);\n  if (rlim < RLIM_INFINITY && brk - mm->start_data > rlim)\n    goto out;\n\n  /* Check against existing mappings */\n  if (!find_vma_intersection(mm, oldbrk, newbrk + PAGE_SIZE))\n    if (!do_brk(oldbrk, newbrk - oldbrk))\n      goto set_brk;\nout:\n  retval = mm->brk;\n  up_write(&mm->mmap_sem);\n  return retval;\nset_brk:\n  mm->brk = brk;\n  mm->brk_page = newbrk;\n  retval = brk;\n  up_write(&mm->mmap_sem);\n  return retval;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-mmap-sem",
+          "title": "down_write(&mm->mmap_sem) — 独占锁",
+          "description": "sys_brk() 获取 mmap_sem 写锁以串行化所有 VMA 修改。这防止并发的 mmap/munmap/brk 操作破坏 VMA 树。",
+          "type": "data",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-page-align",
+          "title": "PAGE_ALIGN() — 舍入到页边界",
+          "description": "PAGE_ALIGN(addr) 将地址向上舍入到最近的页边界（x86 上通常为 4KB）。内核仅以页粒度管理内存，因此部分页的断点地址会被舍入。",
+          "type": "concept",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-heap-check",
+      "title": "堆边界检查 — mm->brk 与限制对比",
+      "description": "内核针对多个限制验证请求的中断点地址：不能收缩到代码段末尾以下，不能超过 RLIMIT_DATA 软限制，且不能与现有的 mmap 区域冲突。",
+      "data_structures": ["mm_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "brk-check-end-code",
+          "title": "brk >= mm->end_code",
+          "description": "中断点地址不能低于程序代码段的末尾（mm->end_code）。这保护文本和数据段不被堆收缩覆盖。",
+          "type": "data",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-check-rlimit",
+          "title": "RLIMIT_DATA 检查",
+          "description": "内核检查 brk - mm->start_data 是否超过 RLIMIT_DATA（每进程数据段大小限制）。如果请求的堆大小超过此限制，brk() 调用失败并返回不变的中断点。",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 308,
+            "snippet": "rlim = rlimit(RLIMIT_DATA);\nif (rlim < RLIM_INFINITY && brk - mm->start_data > rlim)\n  goto out;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-check-intersection",
+          "title": "find_vma_intersection() — 避免 mmap 冲突",
+          "description": "扩展堆时，内核使用 find_vma_intersection() 检查是否有现有 VMA 与 [oldbrk, newbrk] 范围重叠。如果有冲突，brk() 失败。",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 314,
+            "snippet": "if (!find_vma_intersection(mm, oldbrk, newbrk + PAGE_SIZE))\n  if (!do_brk(oldbrk, newbrk - oldbrk))\n    goto set_brk;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-vma-update",
+      "title": "VMA 更新 — do_brk() → 扩展或创建 VMA",
+      "description": "do_brk() 处理实际的 VMA 操作。如果堆 VMA 可以原地扩展（与现有堆相邻），则扩展 vm_end 字段。否则，为堆区域创建一个新的匿名 VMA。",
+      "data_structures": ["mm_struct", "vm_area_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "brk-do-brk",
+          "title": "do_brk() — 核心堆扩展",
+          "description": "mm/mmap.c 中的 do_brk() 是堆扩展的核心函数。它找到旧中断点地址处的 VMA 并尝试扩展。如果扩展失败，则分配一个新的匿名 VMA。",
+          "type": "code",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 230,
+            "snippet": "int do_brk(unsigned long addr, unsigned long len)\n{\n  struct mm_struct *mm = current->mm;\n  struct vm_area_struct *vma, *prev;\n  unsigned long flags;\n  struct rb_node **rb_link, *rb_parent;\n\n  len = PAGE_ALIGN(len);\n  if (!len)\n    return addr;\n\n  if ((addr + len) > TASK_SIZE || (addr + len) < addr)\n    return -EINVAL;\n\n  flags = VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | mm->def_flags;\n\n  if (find_vma_links(mm, addr, addr + len, &prev, &rb_link, &rb_parent))\n    return -ENOMEM;\n\n  vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);\n  if (!vma)\n    return -ENOMEM;\n\n  vma->vm_mm = mm;\n  vma->vm_start = addr;\n  vma->vm_end = addr + len;\n  vma->vm_flags = flags;\n  vma->vm_page_prot = vm_get_page_prot(flags);\n  vma_link(mm, vma, prev, rb_link, rb_parent);\n  return 0;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-vma-merge",
+          "title": "vma_merge() — 合并相邻 VMA",
+          "description": "如果堆扩展与具有兼容标志的现有匿名 VMA 相邻，vma_merge() 将它们合并为单个 VMA。这减少了 VMA 列表碎片并提高性能。",
+          "type": "code",
+          "data_structures": ["vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 520,
+            "snippet": "struct vm_area_struct *vma_merge(struct mm_struct *mm,\n    struct vm_area_struct *prev, unsigned long addr,\n    unsigned long end, unsigned long vm_flags,\n    struct anon_vma *anon_vma, struct file *file,\n    pgoff_t pgoff, struct mempolicy *policy)\n{\n  pgoff_t pglen = (end - addr) >> PAGE_SHIFT;\n  struct vm_area_struct *area, *next;\n\n  if (!prev)\n    prev = find_vma(mm, addr);\n  if (prev && prev->vm_end == addr) {\n    area = prev;\n    if (can_vma_merge_after(area, vm_flags,\n        anon_vma, file, pgoff)) {\n      /* ... */\n    }\n  }\n  /* ... */\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-vm-flags",
+          "title": "堆的 VMA 标志：VM_READ | VM_WRITE",
+          "description": "堆 VMA 以 VM_READ | VM_WRITE 标志创建，使其成为读写匿名映射。还设置了 VM_ACCOUNT，以便内核针对进程提交限制跟踪内存以进行 OOM 核算。",
+          "type": "data",
+          "data_structures": ["vm_area_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-page-alloc",
+      "title": "页分配 — 首次访问时按需零分配",
+      "description": "brk() 本身不分配物理页——它只更新 VMA 边界。当进程首次写入新扩展的堆页时触发页错误处理程序，物理页框才会被分配。",
+      "data_structures": ["mm_struct", "page"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "brk-page-fault",
+          "title": "do_page_fault() — 首次接触分配页面",
+          "description": "当进程写入扩展堆区域中的地址时，MMU 引发页错误（因为尚无 PTE）。arch/x86/mm/fault.c 中的 do_page_fault() 处理程序调用 handle_mm_fault() 来分配物理页并设置页表项。",
+          "type": "code",
+          "data_structures": ["mm_struct", "page"],
+          "source_ref": {
+            "file": "arch/x86/mm/fault.c",
+            "line": 680,
+            "snippet": "static void __kprobes do_page_fault(struct pt_regs *regs,\n    unsigned long error_code)\n{\n  struct vm_area_struct *vma;\n  unsigned long address;\n  struct mm_struct *mm;\n  int write, fault;\n\n  address = read_cr2();\n  mm = current->mm;\n  /* ... */\n  vma = find_vma(mm, address);\n  if (!vma)\n    goto bad_area;\n  /* ... */\n  fault = handle_mm_fault(mm, vma, address, write);\n  /* ... */\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-alloc-page",
+          "title": "alloc_page() — 获取清零的物理页",
+          "description": "handle_mm_fault() -> __do_fault() -> alloc_page(GFP_HIGHUSER) 分配物理页框。对于匿名堆页，页面在映射到进程地址空间前被清零（fork 用 COW 语义，brk 扩展用零填充）。",
+          "type": "code",
+          "data_structures": ["page"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2650,
+            "snippet": "static int __do_fault(struct mm_struct *mm,\n    struct vm_area_struct *vma,\n    unsigned long address, pmd_t *pmd,\n    pgoff_t pgoff, unsigned int flags,\n    pte_t orig_pte)\n{\n  struct page *page;\n  /* ... */\n  page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, address);\n  if (!page)\n    return VM_FAULT_OOM;\n  clear_user_highpage(page, address);\n  /* ... */\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-zero-page",
+          "title": "堆页的零填充保证",
+          "description": "内核保证新分配的堆页被清零。这防止进程间信息泄露——进程无法读取物理页框前所有者留下的数据。",
+          "type": "concept",
+          "data_structures": ["page"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-tlb-update",
+      "title": "TLB / PTE 更新 — 映射虚拟到物理",
+      "description": "分配物理页后，内核通过写入页表项（PTE）并刷新 TLB 来建立虚拟到物理的映射，使 CPU 的地址转换缓存看到新映射。",
+      "data_structures": ["mm_struct", "page"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "brk-set-pte",
+          "title": "set_pte_at() — 写入页表项",
+          "description": "set_pte_at() 写入将虚拟地址映射到物理页框的 PTE。PTE 包含权限位（读/写）、存在位、脏位和物理页框号（PFN）。",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/pgtable.h",
+            "line": 315,
+            "snippet": "static inline void set_pte_at(struct mm_struct *mm,\n    unsigned long addr, pte_t *ptep, pte_t pte)\n{\n  native_set_pte(ptep, pte);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-flush-tlb",
+          "title": "flush_tlb_page() / __flush_tlb_one() — 使 TLB 失效",
+          "description": "修改 PTE 后，内核必须使对应的 TLB 项失效。在 x86 上，这是通过 invlpg 指令完成的（通过 __flush_tlb_one() 调用），它使单个虚拟地址的 TLB 项失效。",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/include/asm/tlbflush.h",
+            "line": 52,
+            "snippet": "static inline void __flush_tlb_one(unsigned long addr)\n{\n  __native_flush_tlb_single(addr);\n}\n\nstatic inline void native_flush_tlb_single(unsigned long addr)\n{\n  asm volatile(\"invlpg (%0)\" :: \"r\" (addr) : \"memory\");\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-pte-bits",
+          "title": "PTE 标志：_PAGE_PRESENT | _PAGE_RW | _PAGE_USER",
+          "description": "堆页的 PTE 包含：_PAGE_PRESENT（页在内存中）、_PAGE_RW（读写访问）、_PAGE_USER（用户模式可访问）、_PAGE_ACCESSED（CPU 已访问）和 _PAGE_DIRTY（CPU 已写入）。",
+          "type": "data",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "brk-return-path",
+      "title": "返回路径 — 新 brk 值存入 %rax",
+      "description": "sys_brk() 成功时返回新的程序中断点地址，失败时返回当前（未改变的）中断点。glibc 包装器更新其中断点内部记录，成功返回 0，失败返回 -1 并设置 errno。",
+      "data_structures": ["task_struct"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "brk-return-value",
+          "title": "返回值语义",
+          "description": "成功时，sys_brk() 返回新的中断点地址（与请求的 addr 相同）。失败时（如超过 RLIMIT、VMA 冲突），返回旧的中断点地址。glibc 的 brk() 包装器进行转换：如果 retval < requested_addr，返回 -1 并设置 errno = ENOMEM。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-sysret",
+          "title": "sysretq — 返回用户空间",
+          "description": "sys_brk() 完成后，系统调用退出路径从栈帧恢复用户空间寄存器，切换到 ring 3，并将控制权返回到 glibc 包装器中 syscall 之后的指令。",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "brk-glibc-update",
+          "title": "glibc 内部 __curbrk 更新",
+          "description": "glibc 维护一个全局变量 __curbrk 来跟踪当前程序中断点。成功的 brk() 调用后，glibc 更新此变量。sbrk() 使用 __curbrk 计算后续调用的下一个中断点地址。",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

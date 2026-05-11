@@ -1,0 +1,354 @@
+{
+  "id": "epoll_wait",
+  "name": "epoll_wait()",
+  "description": "等待 epoll 文件描述符上的 I/O 事件。内核扫描 epoll 实例的就绪列表；如果已有可用事件，则立即将其复制到用户空间。否则，调用任务被放入 epoll 等待队列并进入睡眠，直到事件到达或超时到期。",
+  "signature": "int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)",
+  "entry_point_file": "fs/eventpoll.c",
+  "main_flow": [
+    {
+      "id": "epoll-wait-user-space",
+      "title": "用户空间",
+      "description": "用户空间程序通过 C 库包装器调用 epoll_wait(epfd, events, 128, -1)。包装器将系统调用号放入 %rax，四个参数依次放入 %rdi 到 %r10，然后执行 syscall 指令陷入内核。events 数组是用户空间缓冲区，用于接收就绪事件描述符。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-user-space-glibc",
+          "title": "glibc epoll_wait() 包装器",
+          "type": "concept",
+          "description": "GNU C 库提供了一个围绕原始系统调用的薄包装器。它按照 ABI 定义的调用约定设置参数：%rax = __NR_epoll_wait，%rdi = epfd，%rsi = events 指针，%rdx = maxevents，%r10 = timeout。此时还没有内核参与 —— 这完全是用户空间准备工作。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-user-space-syscall-insn",
+          "title": "syscall 指令",
+          "type": "code",
+          "description": "syscall 指令原子性地保存 %rip 和 %rflags，切换到 ring 0，并从 TSS 加载内核栈指针。控制权跳转到 entry_64.S 中的 system_call 入口点，后者将分派到 sys_epoll_wait()。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-user-space-epoll-event",
+          "title": "struct epoll_event 布局",
+          "type": "data",
+          "description": "用户提供一个 struct epoll_event 对象数组。每个事件包含一个 32 位事件掩码（EPOLLIN、EPOLLOUT 等）和一个 64 位数据字段（通常是 fd 或用户指针）。内核用这个数组填充就绪文件描述符的事件。",
+          "data_structures": [],
+          "source_ref": {
+            "file": "include/linux/eventpoll.h",
+            "line": 58,
+            "snippet": "struct epoll_event {\n  __u32 events;\n  __u64 data;\n} EPOLL_PACKED;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-kernel-entry",
+      "title": "内核入口",
+      "description": "通用系统调用分派表将 NR_epoll_wait 路由到 fs/eventpoll.c 中的 sys_epoll_wait()。内核验证 epoll 文件描述符，获取 struct file 指针，并访问嵌入在 file->private_data 中的 eventpoll 结构。然后验证用户空间的 events 缓冲区和 maxevents 计数。",
+      "data_structures": ["task_struct", "file", "eventpoll"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-kernel-entry-sys-epoll-wait",
+          "title": "SYSCALL_DEFINE4(epoll_wait, ...)",
+          "type": "code",
+          "description": "sys_epoll_wait() 在 fs/eventpoll.c 中通过 SYSCALL_DEFINE4 宏定义。它调用 fget() 从当前进程的文件描述符表中查找 struct file，验证它是一个 epoll 实例，然后委托给 do_epoll_wait()。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1321,
+            "snippet": "SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,\n  int, maxevents, int, timeout)\n{\n  int error;\n  struct file *file;\n  struct eventpoll *ep;\n\n  file = fget(epfd);\n  if (!file)\n    return -EBADF;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-kernel-entry-ep-check",
+          "title": "epoll 实例验证",
+          "type": "code",
+          "description": "内核通过检查 file->f_op == &eventpoll_fops 来验证文件描述符是否指向 epoll 实例。然后将 file->private_data 强制转换为 struct eventpoll*，这是每个实例的数据结构，包含就绪列表、等待队列和受监控文件集合。",
+          "data_structures": ["file", "eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1375,
+            "snippet": "ep = file->private_data;\nif (!is_file_epoll(file)) {\n  fput(file);\n  return -EINVAL;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-kernel-entry-do-epoll-wait",
+          "title": "do_epoll_wait() 入口",
+          "type": "code",
+          "description": "do_epoll_wait() 是核心实现。它首先检查就绪列表（ep->rdllist）是否非空。如果已有可用事件，则调用 ep_send_events() 将其复制到用户空间并立即返回。否则，它准备在等待队列上睡眠。",
+          "data_structures": ["eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1116,
+            "snippet": "static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,\n  int maxevents, long timeout)\n{\n  int res, eavail;\n  unsigned long flags;\n  long jtimeout;\n  wait_queue_t wait;\n\n  if (timeout > 0) {\n    jtimeout = timeout;\n  } else if (timeout == 0) {\n    jtimeout = 0;\n  } else {\n    jtimeout = MAX_SCHEDULE_TIMEOUT;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-instance",
+      "title": "Epoll 实例",
+      "description": "struct eventpoll 是 epoll 实例的内核表示。它包含一个红黑树（rbr）存储所有受监控的文件描述符、一个链表（rdllist）存储就绪事件、一个用于睡眠调用者的等待队列头，以及一个用于同步的互斥锁。该实例由 epoll_create() 创建，由 epoll_ctl() 填充。",
+      "data_structures": ["eventpoll", "epitem", "eppoll_entry"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-instance-struct",
+          "title": "struct eventpoll",
+          "type": "data",
+          "description": "struct eventpoll 是 epoll 实例的核心数据结构。rbr 字段是一个红黑树，包含 epitem 节点（每个受监控 fd 一个）。rdllist 是一个双向链表，包含有待处理事件的 epitem。wq 等待队列头是 epoll_wait() 调用者睡眠的地方。",
+          "data_structures": ["eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 155,
+            "snippet": "struct eventpoll {\n  spinlock_t lock;\n  struct mutex mtx;\n  wait_queue_head_t wq;\n  wait_queue_head_t poll_wait;\n  struct list_head rdllist;\n  struct rb_root rbr;\n  struct epitem *ovflist;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-instance-epitem",
+          "title": "struct epitem — 每个 fd 的跟踪",
+          "type": "data",
+          "description": "每个受监控的文件描述符由一个 epitem 结构表示。它包含文件指针、用户请求的事件掩码、用户数据（epoll_event.data），以及红黑树（rbn）和就绪列表（rdllink）的链接。epitem 还维护一个 eppoll_entry 对象列表，用于等待队列回调。",
+          "data_structures": ["epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 120,
+            "snippet": "struct epitem {\n  struct rb_node rbn;\n  struct list_head rdllink;\n  struct epoll_filefd ffd;\n  struct list_head pwqlist;\n  struct eventpoll *ep;\n  struct list_head fllink;\n  struct epoll_event event;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-instance-ep-insert",
+          "title": "ep_insert() — 将 fd 加入 epoll 集合",
+          "type": "code",
+          "description": "ep_insert() 由 epoll_ctl(EPOLL_CTL_ADD) 调用。它分配一个新的 epitem，用文件指针和事件掩码初始化它，将其插入红黑树，并通过 ep_ptable_queue_proc() 在目标文件的等待队列上注册 ep_poll_callback。",
+          "data_structures": ["eventpoll", "epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 874,
+            "snippet": "static int ep_insert(struct eventpoll *ep,\n  struct epoll_event *event,\n  struct file *tfile, int fd)\n{\n  struct epitem *epi;\n  ...\n  epi = kmem_cache_alloc(epi_cache, GFP_KERNEL);\n  ...\n  ep_rbtree_insert(ep, epi);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-ready-list",
+      "title": "就绪列表",
+      "description": "就绪列表（rdllist）包含其文件描述符有待处理事件且与请求掩码匹配的 epitem 节点。当调用 epoll_wait() 时，ep_send_events() 遍历 rdllist，为每个条目调用文件的 poll 方法以确定确切的事件掩码，将结果复制到用户空间 events 数组，并从就绪列表中移除条目。",
+      "data_structures": ["eventpoll", "epitem"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-ready-list-scan",
+          "title": "ep_send_events() — 遍历 rdllist",
+          "type": "code",
+          "description": "ep_send_events() 是将就绪事件从内核传输到用户空间的函数。它遍历 rdllist 链表，调用 ep_item_poll() 获取每个 epitem 的当前事件掩码，如果事件匹配，则通过 __put_user() 将 epoll_event 复制到用户缓冲区。",
+          "data_structures": ["eventpoll", "epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1105,
+            "snippet": "static int ep_send_events(struct eventpoll *ep,\n  struct epoll_event __user *events,\n  int maxevents)\n{\n  int eventcnt = 0;\n  struct list_head *lsthead = &ep->rdllist;\n  ...\n  list_for_each_entry_safe(epi, tmp, lsthead, rdllink) {"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-ready-list-poll",
+          "title": "ep_item_poll() — 重新检查事件",
+          "type": "code",
+          "description": "在返回事件之前，ep_send_events() 调用 ep_item_poll() 重新检查文件的当前状态。这处理了事件条件在回调和 epoll_wait() 之间变为假的情况（例如，读取操作消耗了所有可用数据）。poll 方法返回就绪事件的位掩码。",
+          "data_structures": ["epitem", "file"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 685,
+            "snippet": "static unsigned int ep_item_poll(struct epitem *epi, poll_table *pt)\n{\n  pt->key = epi->event.events;\n\n  return epi->ffd.file->f_op->poll(epi->ffd.file, pt) &\n    epi->event.events;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-ready-list-copy",
+          "title": "将事件复制到用户空间",
+          "type": "code",
+          "description": "对于每个事件匹配的 epitem，ep_send_events() 使用 __put_user() 将 epoll_event 结构（事件掩码 + 用户数据）复制到用户空间 events 数组。它还处理 EPOLLONESHOT 标志（传递后清除事件掩码）和 EPOLLET 标志（边缘触发行为下将条目保留在就绪列表中）。",
+          "data_structures": ["epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1260,
+            "snippet": "if (__put_user(revents, &uevent->events) ||\n    __put_user(epi->event.data, &uevent->data))\n  return -EFAULT;\n...\nif (epi->event.events & EPOLLONESHOT)\n  epi->event.events &= EP_PRIVATE_BITS;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-wait-queue",
+      "title": "等待队列",
+      "description": "如果调用 epoll_wait() 时就绪列表为空，调用任务必须睡眠直到事件到达。内核使用 add_wait_queue_exclusive() 将任务添加到 epoll 实例的等待队列（ep->wq）。任务进入 TASK_INTERRUPTIBLE 状态并调用 schedule() 让出 CPU。它将被 ep_poll_callback() 在受监控 fd 变为就绪时唤醒，或被信号唤醒，或在超时时唤醒。",
+      "data_structures": ["task_struct", "eventpoll", "wait_queue"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-wait-queue-add",
+          "title": "add_wait_queue_exclusive()",
+          "type": "code",
+          "description": "内核将当前任务以独占标志添加到 epoll 实例的等待队列头（ep->wq）。独占唤醒确保每个事件只唤醒一个等待者，这对于多个线程在同一个 epoll 实例上调用 epoll_wait() 时的可扩展性很重要。",
+          "data_structures": ["task_struct", "eventpoll", "wait_queue"],
+          "source_ref": {
+            "file": "kernel/wait.c",
+            "line": 24,
+            "snippet": "void add_wait_queue_exclusive(wait_queue_head_t *q,\n  wait_queue_t *wait)\n{\n  unsigned long flags;\n  wait->flags |= WQ_FLAG_EXCLUSIVE;\n  spin_lock_irqsave(&q->lock, flags);\n  __add_wait_queue_tail(q, wait);\n  spin_unlock_irqrestore(&q->lock, flags);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-wait-queue-sleep",
+          "title": "schedule_timeout() — 睡眠直到事件",
+          "type": "code",
+          "description": "将自己加入等待队列后，任务将其状态设置为 TASK_INTERRUPTIBLE 并调用 schedule_timeout()。这让出 CPU。任务将保持睡眠状态，直到 ep_poll_callback() 唤醒它（通过 wake_up()）、信号到达或超时 jiffies 到期。timeout 值为 -1 表示无限等待。",
+          "data_structures": ["task_struct", "eventpoll"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1330,
+            "snippet": "set_current_state(TASK_INTERRUPTIBLE);\nif (!list_empty(&ep->rdllist) || !jtimeout)\n  break;\n...\njtimeout = schedule_timeout(jtimeout);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-wait-queue-eppoll-entry",
+          "title": "struct eppoll_entry — 每个等待者的链接",
+          "type": "data",
+          "description": "每次 epoll_ctl() 添加文件描述符时，都会分配一个 eppoll_entry 结构来将 epitem 链接到目标文件的等待队列。eppoll_entry 包含一个插入到文件等待队列中的 wait_queue_t，以及一个指回 epitem 的指针，以便 ep_poll_callback() 可以找到 epoll 实例。",
+          "data_structures": ["eppoll_entry", "epitem", "wait_queue"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 180,
+            "snippet": "struct eppoll_entry {\n  struct list_head llink;\n  struct epitem *base;\n  wait_queue_t wait;\n  wait_queue_head_t *whead;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-event-notify",
+      "title": "事件通知",
+      "description": "当受监控的文件描述符变为就绪时（例如，数据到达套接字、管道有空间、文件读取完成），文件的 poll 方法或中断处理程序在该文件的等待队列上调用 wake_up()。这会触发 ep_poll_callback()，它检查事件是否与请求的掩码匹配，将 epitem 添加到 epoll 就绪列表（rdllist），并唤醒在 epoll 实例等待队列上睡眠的任何任务。",
+      "data_structures": ["epitem", "eventpoll", "wait_queue"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-event-notify-callback",
+          "title": "ep_poll_callback() — 事件传递",
+          "type": "code",
+          "description": "ep_poll_callback() 是在每个受监控文件的等待队列上注册的唤醒函数。当文件变为就绪时，此回调被调用。它获取 epoll 锁，检查事件掩码是否与 epitem 的兴趣掩码匹配，如果尚未存在则将 epitem 添加到 rdllist，并在 ep->wq 上调用 wake_up() 以唤醒睡眠的 epoll_wait() 调用者。",
+          "data_structures": ["epitem", "eventpoll", "wait_queue"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 657,
+            "snippet": "static int ep_poll_callback(wait_queue_t *wait,\n  unsigned mode, int sync, void *key)\n{\n  struct epitem *epi = ep_item_from_wait(wait);\n  struct eventpoll *ep = epi->ep;\n  ...\n  if (!list_empty(&epi->rdllink))\n    goto is_linked;\n  list_add_tail(&epi->rdllink, &ep->rdllist);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-event-notify-wake-up",
+          "title": "wake_up() — 通知 epoll_wait() 调用者",
+          "type": "code",
+          "description": "将 epitem 添加到就绪列表后，ep_poll_callback() 在 epoll 实例的等待队列头（ep->wq）上调用 wake_up()。这会遍历等待队列并唤醒第一个独占等待者（如果是非独占则唤醒所有等待者）。被唤醒的任务将从 schedule_timeout() 返回，并在 do_epoll_wait() 中重新检查 rdllist。",
+          "data_structures": ["eventpoll", "wait_queue"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1072,
+            "snippet": "if (waitqueue_active(&ep->wq))\n  wake_up_locked(&ep->wq);\nif (waitqueue_active(&ep->poll_wait))\n  wake_up_locked(&ep->poll_wait);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-event-notify-file-ready",
+          "title": "文件就绪触发器",
+          "type": "concept",
+          "description": "不同类型的文件通过不同的机制触发 ep_poll_callback()。网络套接字在数据到达时通过 sock_def_readable() 唤醒。管道在写端写入数据时通过 pipe_wake_up() 唤醒。常规文件始终被认为可读/可写。定时器通过定时器回调唤醒。共同的模式是：条件变为真 → wake_up(&file->wait_queue) → ep_poll_callback()。",
+          "data_structures": ["epitem", "wait_queue"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "epoll-wait-return-path",
+      "title": "返回路径",
+      "description": "一旦事件可用（立即或在被唤醒后），ep_send_events() 将 epoll_event 结构复制到用户空间。系统调用返回传递的事件数量（超时为 0，错误为 -1 并设置 errno）。用户进程随后可以处理每个就绪 fd —— 通常对返回的文件描述符调用 read()、write() 或 accept()。",
+      "data_structures": ["task_struct", "epitem"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "epoll-wait-return-copy",
+          "title": "复制到用户空间 events 数组",
+          "type": "code",
+          "description": "ep_send_events() 使用 __put_user() 将每个就绪的 epoll_event 复制到用户空间缓冲区。events 字段包含就绪掩码（EPOLLIN、EPOLLOUT、EPOLLERR 等），data 字段包含用户在 epoll_ctl() 时注册的任何内容（通常是 fd 或指针）。",
+          "data_structures": ["epitem"],
+          "source_ref": {
+            "file": "fs/eventpoll.c",
+            "line": 1260,
+            "snippet": "if (__put_user(revents, &uevent->events) ||\n    __put_user(epi->event.data, &uevent->data))\n  return -EFAULT;\nuevent++;\neventcnt++;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-return-syscall-exit",
+          "title": "系统调用返回 — 事件计数在 %rax 中",
+          "type": "code",
+          "description": "sys_epoll_wait() 将事件计数返回给 entry_64.S 中的系统调用分派。RESTORE_ARGS 宏重新加载保存的用户空间寄存器，sysretq 指令切换回 ring 3。C 库包装器在 %rax 中接收返回值：正计数 = 事件数量，0 = 超时，-1 = 错误（检查 errno）。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "epoll-wait-return-edge-triggered",
+          "title": "EPOLLET 边缘触发语义",
+          "type": "concept",
+          "description": "使用 EPOLLET（边缘触发）标志时，epitem 在 ep_send_events() 后保留在 rdllist 中，只有在新的边缘发生时才重新添加（新数据到达、新连接等）。这要求应用程序读取/写入直到返回 EAGAIN，以避免丢失事件。电平触发（默认）行为在每次 epoll_wait() 调用时重新检查 fd 状态。",
+          "data_structures": ["epitem", "eventpoll"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

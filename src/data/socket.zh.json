@@ -1,0 +1,370 @@
+{
+  "id": "socket",
+  "name": "socket()",
+  "description": "创建网络通信端点。内核分配一个新的 socket 对象，选择适当的协议族实现（例如 AF_INET 对应 IPv4），并初始化协议特定的状态，包括发送/接收缓冲区队列和协议操作向量。",
+  "signature": "int socket(int domain, int type, int protocol)",
+  "entry_point_file": "net/socket.c",
+  "main_flow": [
+    {
+      "id": "socket-user-space",
+      "title": "用户空间",
+      "description": "用户空间程序通过 C 库包装器调用 socket(AF_INET, SOCK_STREAM, 0)。系统调用号（x86-64 上 NR_socket = 41）被放入 %rax，domain 放入 %rdi，type 放入 %rsi，protocol 放入 %rdx，然后执行 syscall 指令陷入内核。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "socket-user-space-glibc",
+          "title": "glibc socket() 包装器",
+          "type": "concept",
+          "description": "GNU C 库提供了一个围绕原始系统调用的薄包装器。它设置 ABI 定义的调用约定：%rax = __NR_socket (41)，%rdi = domain (AF_INET = 2)，%rsi = type (SOCK_STREAM = 1)，%rdx = protocol (0 = IPPROTO_IP)。此时还没有内核参与。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-user-space-syscall-insn",
+          "title": "syscall 指令",
+          "type": "code",
+          "description": "syscall 指令原子地将 %rip 和 %rflags 保存到 MSR_LSTAR 定义的内核入口，切换到 ring 0，并从 TSS 加载内核栈指针。控制权跳转到 entry_64.S 中的 system_call 入口点。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-user-space-params",
+          "title": "Socket 参数",
+          "type": "data",
+          "description": "domain 参数选择地址族（AF_INET 对应 IPv4，AF_INET6 对应 IPv6，AF_UNIX 对应本地套接字）。type 参数选择套接字语义（SOCK_STREAM 对应 TCP，SOCK_DGRAM 对应 UDP，SOCK_RAW 对应原始 IP）。protocol 参数通常为 0，让内核为 domain+type 组合选择默认协议。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-kernel-entry",
+      "title": "内核入口",
+      "description": "通用系统调用分派将 NR_socket 路由到 sys_socket()，这是内核入口点。sys_socket() 验证 domain、type 和 protocol 参数，然后调用 sock_create() 开始实际的 socket 对象分配。",
+      "data_structures": ["task_struct", "socket"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "socket-kernel-entry-sys-socket",
+          "title": "SYSCALL_DEFINE3(socket, ...)",
+          "type": "code",
+          "description": "sys_socket() 在 net/socket.c 中用 SYSCALL_DEFINE3 宏定义。它调用 sock_create() 创建 socket 对象，然后调用 sock_map_fd() 分配文件描述符并将其与新 socket 关联。",
+          "data_structures": ["task_struct", "socket"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 1266,
+            "snippet": "SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)\n{\n  int retval;\n  struct socket *sock;\n\n  retval = sock_create(family, type, protocol, &sock);\n  if (retval < 0)\n    goto out;\n\n  retval = sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-kernel-entry-sock-create",
+          "title": "sock_create()",
+          "type": "code",
+          "description": "sock_create() 是核心的 socket 创建函数。它调用 __sock_create()，后者查找给定地址族的 net_proto_family，验证套接字类型标志，然后调用该族的 create 方法来分配协议特定的状态。",
+          "data_structures": ["socket"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 1256,
+            "snippet": "int sock_create(int family, int type, int protocol, struct socket **res)\n{\n  return __sock_create(current->nsproxy->net_ns, family,\n                       type, protocol, res, 0);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-kernel-entry-sock-map-fd",
+          "title": "sock_map_fd() — socket → fd",
+          "type": "code",
+          "description": "sock_map_fd() 通过 get_unused_fd_flags() 分配新的文件描述符，通过 sock_alloc_file() 创建 struct file，并通过 fd_install() 安装 fd→file 映射。struct file 的 f_op 被设置为 socket_file_ops，因此后续对该 fd 的 read/write/close 系统调用将被路由到 socket 操作。",
+          "data_structures": ["task_struct", "file", "socket"],
+          "source_ref": {
+            "file": "net/socket.c",
+            "line": 344,
+            "snippet": "static int sock_map_fd(struct socket *sock, int flags)\n{\n  struct file *newfile;\n  int fd = get_unused_fd_flags(flags);\n  if (unlikely(fd < 0))\n    return fd;\n\n  newfile = sock_alloc_file(sock, flags, NULL);\n  if (likely(!IS_ERR(newfile))) {\n    fd_install(fd, newfile);\n    return fd;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-af-inet",
+      "title": "AF_INET 协议族",
+      "description": "对于 AF_INET（IPv4），内核分派到 net/ipv4/af_inet.c 中的 inet_create()。该函数针对注册的协议表验证套接字类型，分配 struct sock（通用套接字状态），并初始化 TCP 或 UDP 协议特定的状态，包括操作向量。",
+      "data_structures": ["socket", "sock", "inet_sock"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "socket-af-inet-inet-create",
+          "title": "inet_create()",
+          "type": "code",
+          "description": "inet_create() 是 AF_INET 族的 create 方法。它在 inetsw_array 中搜索匹配的协议（SOCK_STREAM 对应 TCP，SOCK_DGRAM 对应 UDP），验证该协议支持请求的套接字类型，然后调用 sk_alloc() 分配通用的 sock 结构。",
+          "data_structures": ["socket", "sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/ipv4/af_inet.c",
+            "line": 280,
+            "snippet": "static int inet_create(struct net *net, struct socket *sock, int protocol,\n                       int kern)\n{\n  struct sock *sk;\n  struct inet_protosw *answer;\n  struct inet_sock *inet;\n  ...\n  list_for_each_entry(answer, &inetsw[sock->type], list) {\n    if (protocol == answer->protocol)\n      break;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-af-inet-sk-alloc",
+          "title": "sk_alloc() — 分配 struct sock",
+          "type": "code",
+          "description": "sk_alloc() 从 socket slab 缓存中为协议特定的 sock 结构分配内存。对于 TCP，这是 struct tcp_sock（它嵌套了 struct inet_sock，而 struct inet_sock 又嵌套了 struct sock）。分配使用 GFP_KERNEL 标志调用 kmem_cache_alloc()。",
+          "data_structures": ["sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/core/sock.c",
+            "line": 1064,
+            "snippet": "struct sock *sk_alloc(struct net *net, int family,\n                      gfp_t priority,\n                      struct proto *prot)\n{\n  struct sock *sk;\n\n  sk = sk_prot_alloc(prot, priority | __GFP_ZERO, family);\n  if (sk) {\n    sock_init_data(NULL, sk);\n    sk->sk_family = family;\n  }\n  return sk;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-af-inet-proto-ops",
+          "title": "struct proto_ops — inet_stream_ops",
+          "type": "data",
+          "description": "socket 层的 struct proto_ops 向量定义了高级操作，如 bind、connect、listen、accept 和 sendmsg。对于 AF_INET SOCK_STREAM，套接字的 ops 被设置为 inet_stream_ops，它将实际工作委托给传输协议（TCP）。",
+          "data_structures": ["socket", "sock"],
+          "source_ref": {
+            "file": "net/ipv4/af_inet.c",
+            "line": 890,
+            "snippet": "const struct proto_ops inet_stream_ops = {\n  .family       = PF_INET,\n  .owner        = THIS_MODULE,\n  .release      = inet_release,\n  .bind         = inet_bind,\n  .connect      = inet_stream_connect,\n  .socketpair   = sock_no_socketpair,\n  .accept       = inet_accept,\n  .getname      = inet_getname,\n  .poll         = tcp_poll,\n  .ioctl        = inet_ioctl,\n  .listen       = inet_listen,\n  .shutdown     = inet_shutdown,\n  .setsockopt   = sock_common_setsockopt,\n  .getsockopt   = sock_common_getsockopt,\n  .sendmsg      = tcp_sendmsg,\n  .recvmsg      = inet_recvmsg,\n  .mmap         = sock_no_mmap,\n  .sendpage     = tcp_sendpage,\n  .splice_read  = tcp_splice_read,\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-af-inet-tcp-proto",
+          "title": "struct proto — tcp_prot",
+          "type": "data",
+          "description": "传输协议的 struct proto 向量定义了底层操作，如 connect、disconnect、accept 和套接字状态机回调。对于 TCP，tcp_prot 提供了 socket 层调用的协议特定方法。",
+          "data_structures": ["sock"],
+          "source_ref": {
+            "file": "net/ipv4/tcp_ipv4.c",
+            "line": 2120,
+            "snippet": "struct proto tcp_prot = {\n  .name           = \"TCP\",\n  .owner          = THIS_MODULE,\n  .close          = tcp_close,\n  .connect        = tcp_v4_connect,\n  .disconnect     = tcp_disconnect,\n  .accept         = inet_csk_accept,\n  .ioctl          = tcp_ioctl,\n  .init           = tcp_v4_init_sock,\n  .destroy        = tcp_v4_destroy_sock,\n  .shutdown       = tcp_shutdown,\n  .setsockopt     = tcp_setsockopt,\n  .getsockopt     = tcp_getsockopt,\n  .recvmsg        = tcp_recvmsg,\n  .sendmsg        = tcp_sendmsg,\n  .backlog_rcv    = tcp_v4_do_rcv,\n  ...\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-bind-connect",
+      "title": "Bind / Connect 设置",
+      "description": "创建 socket 后，应用程序通常调用 bind() 将套接字与本地地址和端口关联，然后调用 connect() 与远程对等端建立连接。bind() 在 inet_sock 中设置本地地址；connect() 通过 tcp_v4_connect() 发起 TCP 三次握手。",
+      "data_structures": ["socket", "sock", "inet_sock"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "socket-bind-connect-inet-bind",
+          "title": "inet_bind()",
+          "type": "code",
+          "description": "inet_bind() 验证本地地址和端口，使用端口哈希表（tcp_hashinfo.bhash）检查端口冲突，并将本地地址存入 inet->inet_saddr，端口存入 inet->inet_sport。如果端口为 0，内核自动分配一个临时端口。",
+          "data_structures": ["sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/ipv4/af_inet.c",
+            "line": 412,
+            "snippet": "int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)\n{\n  struct sockaddr_in *addr = (struct sockaddr_in *)uaddr;\n  struct sock *sk = sock->sk;\n  struct inet_sock *inet = inet_sk(sk);\n  unsigned short snum;\n  ...\n  snum = ntohs(addr->sin_port);\n  if (snum == 0) {\n    int err = inet_sk_get_port(sk, snum);\n    if (err)\n      return err;\n  }\n  inet->inet_saddr = addr->sin_addr.s_addr;\n  inet->inet_sport = htons(snum);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-bind-connect-tcp-v4-connect",
+          "title": "tcp_v4_connect()",
+          "type": "code",
+          "description": "tcp_v4_connect() 是 IPv4 的 TCP connect 处理程序。它验证目的地址，初始化 TCP 状态机（转移到 TCP_SYN_SENT），通过 tcp_connect() 构建并发送 SYN 包，并启动重传定时器。实际的数据包传输通过 IP 层进行。",
+          "data_structures": ["sock", "inet_sock"],
+          "source_ref": {
+            "file": "net/ipv4/tcp_ipv4.c",
+            "line": 157,
+            "snippet": "int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)\n{\n  struct sockaddr_in *usin = (struct sockaddr_in *)uaddr;\n  struct inet_sock *inet = inet_sk(sk);\n  struct tcp_sock *tp = tcp_sk(sk);\n  __be16 orig_sport;\n  ...\n  tcp_set_state(sk, TCP_SYN_SENT);\n  tp->write_seq = secure_tcp_sequence_number(...);\n  inet->inet_dport = usin->sin_port;\n  inet->inet_daddr = usin->sin_addr.s_addr;\n  tcp_connect(sk);   // build and send SYN\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-bind-connect-socket-state",
+          "title": "套接字状态机",
+          "type": "concept",
+          "description": "TCP 套接字依次经历以下状态：CLOSED → SYN_SENT → ESTABLISHED（收到 SYN-ACK 后）。每个状态转换都受套接字锁（sk->sk_lock.slock）保护，并触发协议状态机中的回调。socket() 调用本身只将套接字创建为 CLOSED 状态。",
+          "data_structures": ["sock"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-sk-buff",
+      "title": "sk_buff 分配",
+      "description": "Linux 中的网络数据通过 sk_buff（socket buffer）结构承载。创建套接字时，发送和接收缓冲区大小限制（sk_sndbuf、sk_rcvbuf）从系统默认值初始化。当数据准备好发送时，alloc_skb() 从 slab 缓存分配 sk_buff，它保存数据包数据、协议头和控制元数据。",
+      "data_structures": ["sk_buff", "sock"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "socket-sk-buff-alloc",
+          "title": "alloc_skb() — 分配 socket buffer",
+          "type": "code",
+          "description": "alloc_skb() 从 slab 缓存分配新的 sk_buff 结构及其关联的数据缓冲区。sk_buff 是 Linux 网络中的通用数据包容器，保存数据包数据、各层的协议头以及时间戳和路由信息等控制元数据。",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "include/linux/skbuff.h",
+            "line": 395,
+            "snippet": "static inline struct sk_buff *alloc_skb(unsigned int size,\n                                          gfp_t priority)\n{\n  return __alloc_skb(size, priority, 0, -1);\n}\n\nstruct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,\n                            int fclone, int node)\n{\n  struct sk_buff *skb;\n  skb = kmem_cache_alloc_node(skbuff_head_cache, gfp_mask & ~GFP_DMA, node);\n  ...\n  size = SKB_DATA_ALIGN(size);\n  data = kmalloc_node_track_caller(size + sizeof(struct skb_shared_info),\n                                   gfp_mask, node);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-sk-buff-struct",
+          "title": "struct sk_buff 布局",
+          "type": "data",
+          "description": "struct sk_buff 是一个双向链表节点，带有数据头/尾指针、传输层头、网络层头和 MAC 头。它还携带套接字所有权（sk）、设备信息（dev）、路由信息（dst_entry）和校验和状态。数据区域通过 skb_shared_info 进行引用计数。",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "include/linux/skbuff.h",
+            "line": 320,
+            "snippet": "struct sk_buff {\n  struct sk_buff          *next;\n  struct sk_buff          *prev;\n  struct sock             *sk;\n  ktime_t                 tstamp;\n  struct net_device       *dev;\n  ...\n  unsigned char           *transport_header;\n  unsigned char           *network_header;\n  unsigned char           *mac_header;\n  unsigned char           *tail;\n  unsigned char           *end;\n  unsigned char           *head;\n  unsigned char           *data;\n  unsigned int            len;\n  __u16                   protocol;\n  ...\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-sk-buff-socket-buffers",
+          "title": "套接字缓冲区限制",
+          "type": "data",
+          "description": "每个套接字在创建时都会初始化发送和接收缓冲区限制。sk_sndbuf 默认为 /proc/sys/net/core/wmem_default（通常约 16KB），sk_rcvbuf 默认为 rmem_default。这些限制控制内核在套接字中可排队的数据量，超过后内核开始丢弃或阻塞。",
+          "data_structures": ["sock"],
+          "source_ref": {
+            "file": "net/core/sock.c",
+            "line": 180,
+            "snippet": "void sock_init_data(struct socket *sock, struct sock *sk)\n{\n  ...\n  sk->sk_sndbuf           = sysctl_wmem_default;\n  sk->sk_rcvbuf           = sysctl_rmem_default;\n  sk->sk_state            = TCP_CLOSE;\n  sk->sk_type             = sock->type;\n  ...\n  skb_queue_head_init(&sk->sk_receive_queue);\n  skb_queue_head_init(&sk->sk_write_queue);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-protocol-stack",
+      "title": "协议栈",
+      "description": "当数据通过套接字发送时，它遍历协议栈：socket 层调用 tcp_sendmsg() 构建 sk_buff，然后 tcp_transmit_skb() 添加 TCP 头并传递给 ip_queue_xmit()，后者添加 IP 头并路由到网络设备。接收路径是反向的：NIC → IP → TCP → 套接字接收队列。",
+      "data_structures": ["sk_buff", "sock"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "socket-protocol-stack-tcp-transmit",
+          "title": "tcp_transmit_skb()",
+          "type": "code",
+          "description": "tcp_transmit_skb() 是核心的 TCP 传输函数。它克隆或分配 sk_buff，构建 TCP 头（源/目的端口、序列号、标志），计算校验和，然后将数据包传递给 IP 层，通过 ip_queue_xmit() 或 ip_build_and_send_pkt() 发送。",
+          "data_structures": ["sk_buff", "sock"],
+          "source_ref": {
+            "file": "net/ipv4/tcp_output.c",
+            "line": 762,
+            "snippet": "static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,\n                            int clone_it, gfp_t gfp_mask)\n{\n  const struct inet_connection_sock *icsk = inet_csk(sk);\n  struct inet_sock *inet;\n  struct tcp_sock *tp = tcp_sk(sk);\n  struct tcp_skb_cb *tcb;\n  ...\n  th = (struct tcphdr *)skb_push(skb, sizeof(struct tcphdr));\n  th->source  = inet->inet_sport;\n  th->dest    = inet->inet_dport;\n  th->seq     = htonl(tcb->seq);\n  th->ack_seq = htonl(tp->rcv_nxt);\n  th->doff    = (sizeof(struct tcphdr)) >> 2;\n  ...\n  icsk->icsk_af_ops->queue_xmit(skb, 0);   // → ip_queue_xmit\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-protocol-stack-ip-queue",
+          "title": "ip_queue_xmit() — IP 层",
+          "type": "code",
+          "description": "ip_queue_xmit() 是 TCP 的 IP 层传输入口点。它查找路由表（通过 sk->sk_dst_cache），构建 IP 头（版本、长度、TTL、protocol=TCP、源/目的地址），计算 IP 校验和，然后通过 dev_queue_xmit() 将数据包传递给输出设备。",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "net/ipv4/ip_output.c",
+            "line": 338,
+            "snippet": "int ip_queue_xmit(struct sk_buff *skb, int ipfragok)\n{\n  struct sock *sk = skb->sk;\n  struct inet_sock *inet = inet_sk(sk);\n  struct ip_options *opt = inet->opt;\n  struct rtable *rt;\n  struct iphdr *iph;\n  int df;\n  ...\n  rt = (struct rtable *)__sk_dst_check(sk, 0);\n  ...\n  iph = (struct iphdr *)skb_push(skb, sizeof(struct iphdr));\n  iph->version  = 4;\n  iph->ihl      = 5;\n  iph->tos      = inet->tos;\n  iph->tot_len  = htons(skb->len);\n  iph->ttl      = ip_select_ttl(inet, &rt->u.dst);\n  iph->protocol = sk->sk_protocol;   // IPPROTO_TCP = 6\n  iph->saddr    = rt->rt_src;\n  iph->daddr    = rt->rt_dst;\n  ip_send_check(iph);\n  ...\n  return NF_HOOK(PF_INET, NF_IP_LOCAL_OUT, skb, NULL,\n                 rt->u.dst.dev, dst_output);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-protocol-stack-dev-queue",
+          "title": "dev_queue_xmit() — 网络设备",
+          "type": "code",
+          "description": "dev_queue_xmit() 是数据包到达 NIC 之前的最后一个内核步骤。它将 sk_buff 加入设备的传输队列（qdisc），触发设备的 hard_start_xmit 方法，并在队列满时处理丢包或拥塞。",
+          "data_structures": ["sk_buff"],
+          "source_ref": {
+            "file": "net/core/dev.c",
+            "line": 2464,
+            "snippet": "int dev_queue_xmit(struct sk_buff *skb)\n{\n  struct net_device *dev = skb->dev;\n  struct netdev_queue *txq;\n  struct Qdisc *q;\n  ...\n  txq = dev_pick_tx(dev, skb);\n  q = rcu_dereference(txq->qdisc);\n  ...\n  rc = q->enqueue(skb, q);\n  ...\n  __qdisc_run(q);   // → hard_start_xmit\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-protocol-stack-receive-path",
+          "title": "接收路径概览",
+          "type": "concept",
+          "description": "接收路径是镜像过程：NIC 触发中断，驱动调用 netif_rx() 或 napi_gro_receive()，数据包遍历 IP 层（ip_rcv()）、TCP 层（tcp_v4_rcv()），最终被加入套接字的接收队列（sk->sk_receive_queue），等待应用程序调用 recv()。",
+          "data_structures": ["sk_buff", "sock"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "socket-return-path",
+      "title": "返回路径",
+      "description": "socket 对象完全初始化后，sock_map_fd() 返回新的文件描述符。sys_socket() 通过系统调用返回路径将该 fd 返回给用户空间。应用程序现在可以使用该 fd 进行 bind()、connect()、send()、recv() 和其他套接字操作。",
+      "data_structures": ["task_struct", "file", "socket"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "socket-return-fd-value",
+          "title": "文件描述符返回值",
+          "type": "data",
+          "description": "socket() 的返回值是一个非负整数文件描述符（通常为 3 或更高，因为 0-2 是 stdin/stdout/stderr）。该 fd 索引到进程的文件描述符表中，表项指向一个 struct file，其 private_data 就是 struct socket。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-return-sysret",
+          "title": "系统调用返回 — sysret",
+          "type": "code",
+          "description": "sys_socket() 将 fd 返回给 entry_64.S 中的系统调用分派。RESTORE_ARGS 宏重新加载保存的用户空间寄存器，sysretq 指令原子地恢复 %rip、%rflags 并切换回 ring 3。C 库包装器在 %rax 中接收 fd。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "socket-return-usage",
+          "title": "用户空间使用模式",
+          "type": "concept",
+          "description": "典型的使用模式是：fd = socket(AF_INET, SOCK_STREAM, 0); bind(fd, &local_addr, ...); connect(fd, &remote_addr, ...); send(fd, buf, len, 0); recv(fd, buf, len, 0); close(fd)。每个调用都通过套接字的 proto_ops 和传输协议的 proto 向量进行路由。",
+          "data_structures": ["task_struct", "socket"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,339 @@
+{
+  "id": "clone",
+  "name": "clone()",
+  "description": "Creates a new thread or process with fine-grained control over what resources are shared between parent and child. Unlike fork(), clone() accepts a bitmask of CLONE_* flags that determine whether the child shares the parent's address space, file descriptors, signal handlers, and more. It is the underlying primitive used by pthreads and container runtimes.",
+  "signature": "int clone(int (*fn)(void *), void *child_stack, int flags, void *arg, ...)",
+  "entry_point_file": "kernel/fork.c",
+  "main_flow": [
+    {
+      "id": "clone-user-space",
+      "title": "User Space — clone() call with CLONE_* flags",
+      "description": "The user-space program calls clone() directly or through the pthreads library (pthread_create). The caller provides a function pointer, a child stack pointer, and a bitmask of CLONE_* flags. The C library wrapper places the syscall number in %rax and the flags in %rdi, then executes the syscall instruction to enter the kernel.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "clone-user-space-glibc",
+          "title": "glibc clone() wrapper",
+          "type": "concept",
+          "description": "The glibc clone() wrapper sets up the child stack with the function pointer and argument, then invokes the syscall with the CLONE_* flags. For pthread_create, the wrapper additionally sets CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID.",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-user-space-syscall-insn",
+          "title": "syscall instruction",
+          "type": "code",
+          "description": "The syscall instruction atomically saves %rip and %rflags, switches to ring 0, and loads the kernel stack pointer from the TSS. Control jumps to the system_call entry point in entry_64.S. The syscall number for clone on x86-64 is 56.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-user-space-flags",
+          "title": "CLONE_* flags bitfield",
+          "type": "data",
+          "description": "The clone_flags parameter is a bitmask controlling resource sharing. Key flags: CLONE_VM (share address space), CLONE_FS (share chroot/cwd), CLONE_FILES (share fd table), CLONE_SIGHAND (share signal handlers), CLONE_THREAD (same thread group), CLONE_NEWNS (new mount namespace). A plain fork() is equivalent to clone(SIGCHLD) with no sharing flags.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "include/linux/sched.h",
+            "line": 5,
+            "snippet": "#define CLONE_VM        0x00000100\n#define CLONE_FS        0x00000200\n#define CLONE_FILES     0x00000400\n#define CLONE_SIGHAND   0x00000800\n#define CLONE_THREAD    0x00010000"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-kernel-entry",
+      "title": "Kernel Entry — sys_clone → do_fork() with flags",
+      "description": "The kernel's syscall dispatch routes NR_clone to sys_clone(), which is defined in kernel/fork.c (or architecture-specific stubs). sys_clone() validates the child stack pointer, copies the flags from user space, and calls do_fork() passing the CLONE_* flags. do_fork() is the shared entry point for fork(), vfork(), and clone().",
+      "data_structures": ["task_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "clone-kernel-entry-sys-clone",
+          "title": "SYSCALL_DEFINE5(clone, ...)",
+          "type": "code",
+          "description": "sys_clone() on x86-64 is defined via SYSCALL_DEFINE5 in kernel/fork.c. It receives the clone_flags, child_stack pointer, parent_tidptr, child_tidptr, and TLS pointer from registers. It validates that child_stack is non-NULL (required for clone, unlike fork), then calls do_fork().",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process_64.c",
+            "line": 535,
+            "snippet": "SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,\n  int __user *, parent_tidptr, int __user *, child_tidptr,\n  int, tls_val)\n{\n  return do_fork(clone_flags, newsp, regs, 0, parent_tidptr, child_tidptr);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-kernel-entry-do-fork",
+          "title": "do_fork() — shared fork/clone entry",
+          "type": "code",
+          "description": "do_fork() is the architecture-independent entry point for all process creation in Linux. It validates clone_flags for illegal combinations (e.g., CLONE_THREAD without CLONE_SIGHAND), then calls copy_process() to create the new task_struct. After copy_process(), it calls wake_up_new_task() to schedule the child.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1379,
+            "snippet": "long do_fork(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *parent_tidptr,\n  int __user *child_tidptr)\n{\n  struct task_struct *p;\n  p = copy_process(clone_flags, stack_start, regs,\n                   stack_size, child_tidptr, NULL);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-kernel-entry-flag-validation",
+          "title": "clone_flags validation",
+          "type": "code",
+          "description": "do_fork() validates the clone_flags bitmask before proceeding. Certain flag combinations are illegal: CLONE_THREAD requires CLONE_SIGHAND; CLONE_SIGHAND requires CLONE_VM. If an invalid combination is detected, do_fork() returns -EINVAL immediately without allocating any resources.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1390,
+            "snippet": "if (clone_flags & CLONE_NEWNS && !(clone_flags & CLONE_FS))\n  return -EINVAL;\nif ((clone_flags & CLONE_THREAD) && !(clone_flags & CLONE_SIGHAND))\n  return -EINVAL;\nif ((clone_flags & CLONE_SIGHAND) && !(clone_flags & CLONE_VM))\n  return -EINVAL;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-copy-process",
+      "title": "copy_process — dup_task_struct → thread_struct init",
+      "description": "copy_process() is the heart of clone: it calls dup_task_struct() to allocate a new task_struct and kernel stack, then conditionally copies or shares each process resource based on the CLONE_* flags. For threads (CLONE_THREAD), the child shares the parent's PID namespace and thread group ID.",
+      "data_structures": ["task_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "clone-copy-process-entry",
+          "title": "copy_process() orchestration",
+          "type": "code",
+          "description": "copy_process() in kernel/fork.c validates flags, calls dup_task_struct() to create the child task_struct, then proceeds to copy each subsystem conditionally based on clone_flags. For CLONE_THREAD, the child gets the same tgid as the parent (same thread group).",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 972,
+            "snippet": "static struct task_struct *copy_process(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *child_tidptr,\n  struct pid *pid)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-dup-task-struct",
+          "title": "dup_task_struct() — new task_struct + kernel stack",
+          "type": "code",
+          "description": "dup_task_struct() allocates a new task_struct with alloc_task_struct() and an 8KB kernel stack with alloc_thread_info(). It copies the parent's task_struct wholesale, then sets up the thread_info pointer to the new stack. The child's kernel stack is a fresh allocation.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 207,
+            "snippet": "static struct task_struct *dup_task_struct(struct task_struct *orig)\n{\n  struct task_struct *tsk;\n  struct thread_info *ti;\n  tsk = alloc_task_struct();\n  if (!tsk)\n    return NULL;\n  ti = alloc_thread_info(tsk);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-thread-struct-init",
+          "title": "thread_struct initialization",
+          "type": "data",
+          "description": "copy_process() initializes the child's thread_struct with the user-provided stack pointer (for clone) or the parent's stack (for fork). The instruction pointer is set to ret_from_fork. For clone with CLONE_SETTLS, the thread-local storage descriptor is copied into the child's thread_struct.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1280,
+            "snippet": "p->thread.sp = (unsigned long) childregs;\np->thread.ip = (unsigned long) ret_from_fork;\nif (clone_flags & CLONE_SETTLS)\n  p->thread.tls = tls;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-alloc-pid",
+          "title": "alloc_pid() — PID / TGID assignment",
+          "type": "code",
+          "description": "alloc_pid() assigns a new PID from the global idr tree. For CLONE_THREAD, the child shares the parent's tgid (thread group ID) but gets its own unique PID. For a plain clone() without CLONE_THREAD, both PID and TGID are new, making it a new process.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid.c",
+            "line": 258,
+            "snippet": "struct pid *alloc_pid(struct pid_namespace *ns)\n{\n  struct pid *pid;\n  enum pid_type type;\n  int i, nr;\n  struct pid_namespace *tmp;\n  struct upid *upid;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-shared-mm",
+      "title": "Shared mm — copy_mm with CLONE_VM flag",
+      "description": "copy_mm() checks CLONE_VM: if set (threads, containers), the child shares the parent's mm_struct and increments its reference count instead of creating a new one. Without CLONE_VM, dup_mm() allocates a new mm_struct and sets up copy-on-write page tables, just like fork().",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "clone-copy-mm-clone-vm",
+          "title": "copy_mm() — CLONE_VM path",
+          "type": "code",
+          "description": "When CLONE_VM is set, copy_mm() simply increments the reference count of the parent's mm_struct and assigns it to the child. Both parent and child now point to the same mm_struct, meaning they share the entire virtual address space including heap, stack mappings, and all memory mappings.",
+          "data_structures": ["mm_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 702,
+            "snippet": "static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct mm_struct *mm, *oldmm;\n  int retval;\n  tsk->min_flt = tsk->maj_flt = 0;\n  tsk->nvcsw = tsk->nivcsw = 0;\n  oldmm = current->mm;\n  if (!oldmm)\n    return 0;\n  if (clone_flags & CLONE_VM) {\n    atomic_inc(&oldmm->mm_users);\n    mm = oldmm;\n    goto good_mm;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-mm-shared-refcount",
+          "title": "mm_struct reference counting",
+          "type": "data",
+          "description": "The mm_struct has two reference counters: mm_users counts the number of processes sharing this mm (incremented by CLONE_VM), and mm_count counts the number of references to the mm_struct itself (including from core dumpers and swap-out code). When mm_users drops to zero, the mm is freed.",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "include/linux/mm_types.h",
+            "line": 200,
+            "snippet": "struct mm_struct {\n  struct vm_area_struct * mmap;\n  struct rb_root mm_rb;\n  pgd_t * pgd;\n  atomic_t mm_users;\n  atomic_t mm_count;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-mm-no-clone-vm",
+          "title": "dup_mm() — without CLONE_VM",
+          "type": "code",
+          "description": "When CLONE_VM is not set, copy_mm() calls dup_mm() to allocate a new mm_struct. It copies all VMAs via dup_mmap() and walks page tables to set up copy-on-write, identical to fork(). This is the path taken by container processes that want their own address space.",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 730,
+            "snippet": "mm = dup_mm(tsk);\nif (!mm)\n  return -ENOMEM;\n\ngood_mm:\ntsk->mm = mm;\ntsk->active_mm = mm;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-shared-files-sighand",
+          "title": "copy_files / copy_sighand with CLONE flags",
+          "type": "code",
+          "description": "Similar to copy_mm, copy_files() checks CLONE_FILES: if set, the child shares the parent's files_struct. copy_sighand() checks CLONE_SIGHAND: if set, the child shares the parent's sighand_struct. copy_fs() checks CLONE_FS for sharing cwd/root/umask. Each uses reference counting when sharing.",
+          "data_structures": ["files_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 744,
+            "snippet": "static int copy_files(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct files_struct *oldf, *newf;\n  oldf = current->files;\n  if (!oldf)\n    goto out;\n  if (clone_flags & CLONE_FILES) {\n    atomic_inc(&oldf->count);\n    goto out;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-wake",
+      "title": "Wake — wake_up_new_task → runqueue enqueue",
+      "description": "After copy_process() completes, do_fork() calls wake_up_new_task() to integrate the child into the scheduler. The child is marked TASK_RUNNING and enqueued on the CPU's CFS runqueue. For threads (CLONE_THREAD), the child shares the parent's signal group and thread group, so signals sent to the tgid are delivered to all threads.",
+      "data_structures": ["task_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "clone-wake-up-new-task",
+          "title": "wake_up_new_task() — enqueue on runqueue",
+          "type": "code",
+          "description": "wake_up_new_task() acquires the runqueue lock, calls activate_task() to insert the child's sched_entity into the CFS red-black tree, and sets the task state to TASK_RUNNING. For threads (CLONE_THREAD), the child is added to the parent's thread group list.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2418,
+            "snippet": "void wake_up_new_task(struct task_struct *p, unsigned long clone_flags)\n{\n  unsigned long flags;\n  struct rq *rq;\n  rq = task_rq_lock(p, &flags);\n  activate_task(rq, p, 0);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-thread-group-link",
+          "title": "Thread group linkage (CLONE_THREAD)",
+          "type": "data",
+          "description": "When CLONE_THREAD is set, copy_process() links the child into the parent's thread group via list_add_tail_rcu(&p->thread_group, &p->group_leader->thread_group). All threads in the group share the same tgid and signal_struct. The group_leader field points to the thread that created the group.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1250,
+            "snippet": "if (clone_flags & CLONE_THREAD) {\n  p->group_leader = current->group_leader;\n  list_add_tail_rcu(&p->thread_group,\n                    &p->group_leader->thread_group);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-sched-entity",
+          "title": "sched_entity for threads",
+          "type": "data",
+          "description": "For CLONE_THREAD tasks, the sched_entity is initialized with vruntime inherited from the parent to maintain fair scheduling within the thread group. All threads in a group compete for CPU time as a single scheduling entity from the perspective of the CFS scheduler.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2389,
+            "snippet": "static void task_fork_fair(struct task_struct *p)\n{\n  struct cfs_rq *cfs_rq = task_cfs_rq(current);\n  struct sched_entity *se = &p->se, *curr = cfs_rq->curr;\n  int this_cpu = smp_processor_id();"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-return",
+      "title": "Return — parent gets PID/TID; child starts at fn(arg)",
+      "description": "do_fork() returns the child's PID to the parent. The child begins execution at ret_from_fork, which jumps to the user-provided function pointer with the argument on the child stack. For threads (CLONE_THREAD), getpid() returns the same tgid for all threads, while gettid() returns each thread's unique PID.",
+      "data_structures": ["task_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "clone-parent-return",
+          "title": "Parent returns child PID/TID",
+          "type": "code",
+          "description": "do_fork() returns the child's PID to the parent via task_pid_vnr(). If CLONE_PARENT_SETTID was specified, the child's TID is written to the parent_tidptr address in user space. The parent resumes execution after the clone() call.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1475,
+            "snippet": "nr = task_pid_vnr(p);\nif (clone_flags & CLONE_PARENT_SETTID)\n  put_user(nr, parent_tidptr);\n/* ... */\nreturn nr;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-child-start",
+          "title": "Child starts at user fn(arg)",
+          "type": "code",
+          "description": "For clone(), the child's stack was pre-populated with the function pointer and argument by the glibc wrapper. When ret_from_fork returns to user space, the child executes the provided function with the argument. When the function returns, the child calls exit() automatically (handled by the glibc wrapper).",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 396,
+            "snippet": "ENTRY(ret_from_fork)\n  DEFAULT_FRAME\n  push kernel_eflags(%rip)\n  CFI_ADJUST_CFA_OFFSET 8\n  popf\n  CFI_ADJUST_CFA_OFFSET -8\n  call schedule_tail"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-child-cleartid",
+          "title": "CLONE_CHILD_CLEARTID — futex wake on exit",
+          "type": "code",
+          "description": "When CLONE_CHILD_CLEARTID is set, the kernel stores the child_tidptr and performs a futex(FUTEX_WAKE) on that address when the child exits. This is how pthread_join() knows when a thread has terminated — it waits on the futex and is woken when the child clears its TID.",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process_64.c",
+            "line": 142,
+            "snippet": "if (clone_flags & CLONE_CHILD_CLEARTID)\n  p->clear_child_tid = child_tidptr;\nif (clone_flags & CLONE_CHILD_SETTID)\n  put_user(nr, child_tidptr);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

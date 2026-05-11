@@ -1,0 +1,384 @@
+{
+  "id": "mmap",
+  "name": "mmap()",
+  "description": "将文件或匿名内存区域映射到调用进程的虚拟地址空间中。内核分配一个新的VMA（虚拟内存区域），惰性地设置页表，并在首次访问时通过页缓存映射物理页或分配匿名零填充页来解决页错误。",
+  "signature": "void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)",
+  "entry_point_file": "arch/x86/kernel/sys_x86_64.c",
+  "main_flow": [
+    {
+      "id": "mmap-user-space",
+      "title": "用户空间",
+      "description": "用户空间程序通过C库封装函数调用mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)，glibc封装函数将系统调用号（x86-64上NR_mmap = 9）放入%rax寄存器，六个参数分别放入%rdi、%rsi、%rdx、%r10、%r8、%r9，然后执行syscall指令。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "mmap-user-space-glibc",
+          "title": "glibc mmap()封装函数",
+          "type": "concept",
+          "description": "GNU C库为原始mmap系统调用提供了一个薄封装层。在x86-64上，它按照ABI约定的调用约定进行设置：%rax = __NR_mmap (9)，%rdi = addr，%rsi = length，%rdx = prot，%r10 = flags，%r8 = fd，%r9 = offset。此阶段尚未涉及内核。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-user-space-syscall-insn",
+          "title": "syscall指令",
+          "type": "code",
+          "description": "syscall指令原子性地将%rip和%rflags保存，切换到ring 0，并从TSS加载内核栈指针。控制权跳转到entry_64.S中的system_call入口点，该入口点根据架构分派到sys_mmap2()或sys_mmap_pgoff()。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-user-space-args",
+          "title": "mmap()参数",
+          "type": "concept",
+          "description": "mmap的六个参数定义了映射：addr（提示地址，NULL让内核选择）、length（字节大小）、prot（R/W/X权限）、flags（共享/私有、匿名/文件 backed、固定等）、fd（文件描述符，匿名映射为-1）、offset（文件中的字节偏移量）。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-kernel-entry",
+      "title": "内核入口",
+      "description": "CPU现在处于ring 0。通用系统调用分派将NR_mmap路由到x86上的sys_mmap2()，后者转换参数并调用sys_mmap_pgoff()。内核验证fd（如果是文件 backed 映射）、检查权限，并开始寻找合适的虚拟地址范围。",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "mmap-kernel-entry-sys-mmap2",
+          "title": "sys_mmap2()",
+          "type": "code",
+          "description": "在x86-32上，sys_mmap2()是入口点。在x86-64上，直接使用sys_mmap()。两者在转换页偏移后都调用sys_mmap_pgoff()。该函数检查prot是否未在只读打开的文件上同时请求PROT_WRITE和MAP_SHARED。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/sys_x86_64.c",
+            "line": 21,
+            "snippet": "SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,\n  unsigned long, prot, unsigned long, flags,\n  unsigned long, fd, unsigned long, off)\n{\n  if (off & ~PAGE_MASK)\n    return -EINVAL;\n  return sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-kernel-entry-sys-mmap-pgoff",
+          "title": "sys_mmap_pgoff()",
+          "type": "code",
+          "description": "sys_mmap_pgoff()是架构无关的入口点。它调用security_mmap_file()进行LSM权限检查，如果fd >= 0则通过fget()获取文件指针。最后调用do_mmap_pgoff()，传入验证后的文件结构体（匿名映射为NULL）。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 909,
+            "snippet": "unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long prot,\n  unsigned long flags, unsigned long pgoff)\n{\n  struct mm_struct *mm = current->mm;\n  struct inode *inode;\n  unsigned int vm_flags;\n  int error;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-kernel-entry-get-unmapped-area",
+          "title": "get_unmapped_area()",
+          "type": "code",
+          "description": "如果用户传入addr = NULL（或未设置MAP_FIXED），get_unmapped_area()在进程的虚拟内存空间中搜索请求长度的连续空闲区域。它使用mmap_base并从用户地址空间顶部向下扫描。",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1455,
+            "snippet": "unsigned long get_unmapped_area(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long pgoff, unsigned long flags)\n{\n  if (flags & MAP_FIXED)\n    return addr;\n  if (file && file->f_op && file->f_op->get_unmapped_area)\n    return file->f_op->get_unmapped_area(file, addr, len, pgoff, flags);\n  return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-vma-allocation",
+      "title": "VMA分配",
+      "description": "do_mmap_pgoff()调用mmap_region()创建一个新的虚拟内存区域（VMA）。它使用find_vma_prepare()在VMA红黑树中定位插入点，然后分配新的vm_area_struct并将其链接到mm_struct的VMA列表和红黑树中。",
+      "data_structures": ["mm_struct", "vm_area_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "mmap-vma-do-mmap-pgoff",
+          "title": "do_mmap_pgoff()",
+          "type": "code",
+          "description": "do_mmap_pgoff()是mmap()的核心。它检查冲突映射，从prot和flags计算VM标志，调用mmap_region()创建VMA，如果是文件 backed 映射，则调用file->f_op->mmap()设置文件的页缓存映射。",
+          "data_structures": ["mm_struct", "vm_area_struct", "file"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1068,
+            "snippet": "unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long prot,\n  unsigned long flags, unsigned long pgoff)\n{\n  struct mm_struct *mm = current->mm;\n  struct vm_area_struct *vma, *prev;\n  ...\n  vma = mmap_region(file, addr, len, flags, vm_flags, pgoff);\n  return addr;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-vma-find-vma-prepare",
+          "title": "find_vma_prepare()",
+          "type": "code",
+          "description": "find_vma_prepare()遍历mm_struct的VMA红黑树，找到在给定地址处会跟随新映射的VMA。它返回前驱VMA和树插入点，这对于维护红黑树不变性是必要的。",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 228,
+            "snippet": "struct vm_area_struct *find_vma_prepare(struct mm_struct *mm,\n  unsigned long addr, struct vm_area_struct **pprev,\n  struct rb_node ***rb_link, struct rb_node **rb_parent)\n{\n  struct vm_area_struct *vma;\n  struct rb_node **__rb_link, *__rb_parent, *rb_prev;\n\n  __rb_link = &mm->mm_rb.rb_node;\n  rb_prev = __rb_parent = NULL;\n  vma = NULL;\n\n  while (*__rb_link) {\n    ...\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-vma-vma-merge",
+          "title": "vma_merge()",
+          "type": "code",
+          "description": "vma_merge()尝试将新映射与具有兼容权限和后备存储的相邻VMA合并。如果成功，不分配新的vm_area_struct——只需扩展现有VMA。这是顺序匿名映射的常见优化。",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 588,
+            "snippet": "struct vm_area_struct *vma_merge(struct mm_struct *mm,\n  struct vm_area_struct *prev, unsigned long addr,\n  unsigned long end, unsigned long vm_flags,\n  struct anon_vma *anon_vma, struct file *file,\n  pgoff_t pgoff, struct mempolicy *policy)\n{\n  ...\n  if (prev && prev->vm_end == addr) {\n    if (can_vma_merge_after(prev, vm_flags,\n        anon_vma, file, pgoff)) {\n      ...\n    }\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-vma-struct",
+          "title": "struct vm_area_struct",
+          "type": "data",
+          "description": "vm_area_struct是内核对连续虚拟内存区域的表示。关键字段包括vm_start/vm_end（地址范围）、vm_flags（权限和行为）、vm_mm（指向mm_struct的反向指针）、vm_file（后备文件，如果有）和vm_pgoff（文件中的页偏移量）。",
+          "data_structures": ["vm_area_struct", "mm_struct"],
+          "source_ref": {
+            "file": "include/linux/mm_types.h",
+            "line": 186,
+            "snippet": "struct vm_area_struct {\n  struct mm_struct *vm_mm;\n  unsigned long vm_start;\n  unsigned long vm_end;\n  struct vm_area_struct *vm_next;\n  pgprot_t vm_page_prot;\n  unsigned long vm_flags;\n  struct rb_node vm_rb;\n  ...\n  struct file *vm_file;\n  unsigned long vm_pgoff;\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-page-fault",
+      "title": "页错误",
+      "description": "mmap()不会立即分配物理页——页表是惰性设置的。在首次访问映射区域时，CPU引发页错误（PF）。内核的do_page_fault()处理程序确定错误类型，定位覆盖错误地址的VMA，并分派到handle_mm_fault()。",
+      "data_structures": ["vm_area_struct", "task_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "mmap-pf-do-page-fault",
+          "title": "do_page_fault()",
+          "type": "code",
+          "description": "do_page_fault()是在IDT中注册的x86页错误处理程序。它读取CR2获取错误虚拟地址，检查错误发生在用户模式还是内核模式，并在VMA列表中搜索包含错误地址的区域。如果找到，调用handle_mm_fault()；否则发送SIGSEGV。",
+          "data_structures": ["task_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "arch/x86/mm/fault.c",
+            "line": 647,
+            "snippet": "static void __kprobes do_page_fault(struct pt_regs *regs,\n  unsigned long error_code)\n{\n  struct vm_area_struct *vma;\n  unsigned long address = read_cr2();\n  struct mm_struct *mm = current->mm;\n  ...\n  vma = find_vma(mm, address);\n  if (!vma)\n    goto bad_area;\n  if (vma->vm_start <= address)\n    goto good_area;\n  ...\n  fault = handle_mm_fault(mm, vma, address, write);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-pf-handle-mm-fault",
+          "title": "handle_mm_fault()",
+          "type": "code",
+          "description": "handle_mm_fault()遍历错误地址的页表层次结构（pgd → pud → pmd → pte）。如果任何级别缺失，分配新的页表页。然后调用架构特定的handle_pte_fault()来解析实际的PTE。",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2698,
+            "snippet": "int handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,\n  unsigned long address, int write_access)\n{\n  pgd_t *pgd;\n  pud_t *pud;\n  pmd_t *pmd;\n  pte_t *pte;\n\n  pgd = pgd_offset(mm, address);\n  pud = pud_alloc(mm, pgd, address);\n  pmd = pmd_alloc(mm, pud, address);\n  pte = pte_alloc_map(mm, pmd, address);\n\n  return handle_pte_fault(mm, vma, address, pte, pmd, write_access);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-pf-pte-walk",
+          "title": "页表遍历（PGD → PUD → PMD → PTE）",
+          "type": "concept",
+          "description": "在x86-64上使用4级分页时，虚拟地址被拆分为索引：PGD（位39-47）、PUD（位30-38）、PMD（位21-29）和PTE（位12-20）。每个级别是一个512项表。遍历从CR3（PGD的物理地址）开始，然后向下跟随指针到叶PTE，按需分配中间表。",
+          "data_structures": ["mm_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-pf-find-vma",
+          "title": "find_vma()",
+          "type": "code",
+          "description": "find_vma()在mm_struct的VMA红黑树中搜索第一个vm_end大于给定地址的VMA。如果地址落在[vm_start, vm_end)范围内，错误是有效的，内核继续处理。否则，访问越界，发送SIGSEGV。",
+          "data_structures": ["mm_struct", "vm_area_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1263,
+            "snippet": "struct vm_area_struct *find_vma(struct mm_struct *mm,\n  unsigned long addr)\n{\n  struct vm_area_struct *vma = NULL;\n\n  if (mm) {\n    vma = mm->mmap_cache;\n    if (!(vma && vma->vm_end > addr && vma->vm_start <= addr)) {\n      struct rb_node *rb_node;\n      rb_node = mm->mm_rb.rb_node;\n      vma = NULL;\n      while (rb_node) {\n        ...\n      }\n    }\n  }\n  return vma;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-mapping",
+      "title": "页映射",
+      "description": "handle_pte_fault()根据PTE状态进行分派。对于匿名映射，do_anonymous_page()从伙伴分配器分配零填充页并将其安装到PTE中。对于文件 backed 映射，do_file_page()（通过do_linear_fault）从页缓存定位或分配页并映射它。",
+      "data_structures": ["address_space", "page"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "mmap-mapping-do-anonymous-page",
+          "title": "do_anonymous_page()",
+          "type": "code",
+          "description": "对于匿名映射（MAP_ANONYMOUS或vm_file == NULL），do_anonymous_page()通过alloc_zeroed_user_highpage_movable()分配新的零填充页。它将PTE设置为指向新页并赋予适当的权限（基于vm_flags的读/写），然后更新RSS计数器。",
+          "data_structures": ["mm_struct", "page"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2362,
+            "snippet": "static int do_anonymous_page(struct mm_struct *mm,\n  struct vm_area_struct *vma, pte_t *page_table,\n  pmd_t *pmd, int write_access, unsigned long addr)\n{\n  struct page *page;\n  pte_t entry;\n  ...\n  page = alloc_zeroed_user_highpage_movable(vma, addr);\n  if (!page)\n    return VM_FAULT_OOM;\n  entry = mk_pte(page, vma->vm_page_prot);\n  if (write_access)\n    entry = pte_mkwrite(pte_mkdirty(entry));\n  set_pte_at(mm, addr, page_table, entry);\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-mapping-do-file-page",
+          "title": "do_file_page() / do_linear_fault()",
+          "type": "code",
+          "description": "对于文件 backed 映射，handle_pte_fault()调用do_file_page()（在较新内核中变为do_linear_fault()）。此路径通过find_get_page()搜索页缓存，缓存未命中时分配新页并调用文件系统的readpage方法从磁盘填充。",
+          "data_structures": ["address_space", "page", "file"],
+          "source_ref": {
+            "file": "mm/memory.c",
+            "line": 2489,
+            "snippet": "static int do_file_page(struct mm_struct *mm,\n  struct vm_area_struct *vma, unsigned long address,\n  pte_t *page_table, pmd_t *pmd, int write_access,\n  pte_t orig_pte)\n{\n  ...\n  page = find_get_page(mapping, pgoff);\n  if (!page) {\n    /* page cache miss — allocate and read from disk */\n    ...\n  }\n  ...\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-mapping-page-cache",
+          "title": "页缓存集成",
+          "type": "data",
+          "description": "文件 backed mmap页由页缓存（address_space）支撑。映射同一文件区域的多个进程通过页缓存共享相同的物理页。这就是MAP_SHARED的工作原理：所有映射者看到相同的页缓存页，写入通过页缓存到达磁盘。",
+          "data_structures": ["address_space", "page", "inode"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 640,
+            "snippet": "struct address_space {\n  struct inode *host;\n  struct radix_tree_root page_tree;\n  spinlock_t tree_lock;\n  unsigned int i_mmap_writable;\n  struct prio_tree_root i_mmap;\n  struct list_head i_mmap_nonlinear;\n  ...\n};"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-mapping-cow",
+          "title": "写时复制（MAP_PRIVATE）",
+          "type": "concept",
+          "description": "对于MAP_PRIVATE映射，即使请求了PROT_WRITE，初始PTE也是只读的。首次写入时引发页错误，内核复制该页（do_wp_page），给进程一个私有的可写副本。原始页缓存页保持不变。这与fork()使用的CoW机制相同。",
+          "data_structures": ["page", "vm_area_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-tlb-update",
+      "title": "TLB更新",
+      "description": "安装新PTE后，内核必须使转换后备缓冲区（TLB）中错误虚拟地址的条目失效。在x86上，flush_tlb_page()发出INVLPG指令使单个TLB条目失效，确保后续访问使用新映射的物理页。",
+      "data_structures": ["mm_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "mmap-tlb-flush-tlb-page",
+          "title": "flush_tlb_page()",
+          "type": "code",
+          "description": "flush_tlb_page()是架构特定的TLB失效例程。在x86-64上，它发出INVLPG指令并附带错误虚拟地址，使该页的TLB条目失效。这强制CPU在下次访问时重新遍历页表。",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/mm/tlb.c",
+            "line": 198,
+            "snippet": "void flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)\n{\n  struct mm_struct *mm = vma->vm_mm;\n  ...\n  if (cpumask_test_cpu(cpu, mm_cpumask(mm))) {\n    __flush_tlb_one(addr);\n  }\n  ...\n}\n\nstatic inline void __flush_tlb_one(unsigned long addr)\n{\n  asm volatile(\"invlpg (%0)\" :: \"r\" (addr) : \"memory\");\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-tlb-invlpg",
+          "title": "INVLPG指令",
+          "type": "hardware",
+          "description": "INVLPG是一条x86特权指令，使单个虚拟页的TLB条目失效。与重新加载CR3（会刷新整个TLB）不同，INVLPG是选择性的且高效的。它还会使分页结构缓存中的任何关联缓存行失效。",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "CPU的INVLPG微操作遍历L1/L2 TLB并移除与给定虚拟地址匹配的条目。如果该页存在于L1指令或数据TLB中，它将被逐出。分页结构缓存（PDE缓存、PML4缓存）也会被检查，如果包含此地址的陈旧转换则使其失效。",
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-tlb-lazy-tlb",
+          "title": "惰性TLB模式",
+          "type": "concept",
+          "description": "为避免跨CPU不必要的TLB shootdown，内核使用惰性TLB模式。当页表更改发生时，只有正在主动运行受影响mm中线程的CPU需要刷新。其他CPU推迟刷新，直到它们上下文切换到该mm。这通过mm_cpumask跟踪。",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "arch/x86/mm/tlb.c",
+            "line": 89,
+            "snippet": "void leave_mm(int cpu)\n{\n  if (cpumask_test_cpu(cpu, mm_cpumask(&init_mm)))\n    return;\n  cpumask_clear_cpu(cpu, mm_cpumask(current->mm));\n  load_cr3(swapper_pg_dir);\n}\n\n/* Called from context switch */\nvoid switch_mm(struct mm_struct *prev, struct mm_struct *next,\n  struct task_struct *tsk)\n{\n  ...\n  cpumask_set_cpu(cpu, mm_cpumask(next));\n  load_cr3(next->pgd);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "mmap-return",
+      "title": "返回路径",
+      "description": "VMA创建后（对于文件 backed 映射，在file->f_op->mmap()设置页缓存关系之后），do_mmap_pgoff()返回映射的虚拟地址。该地址通过sys_mmap_pgoff()、sys_mmap2()和系统调用返回路径传播回用户空间。",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "mmap-return-addr",
+          "title": "返回映射地址",
+          "type": "code",
+          "description": "do_mmap_pgoff()返回新映射的起始地址。该值流经调用链：sys_mmap_pgoff() → sys_mmap2() → entry_64.S系统调用返回路径。地址被放入%rax并返回给glibc封装函数，后者将其返回给调用者。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 1212,
+            "snippet": "unsigned long do_mmap_pgoff(struct file *file, unsigned long addr,\n  unsigned long len, unsigned long prot,\n  unsigned long flags, unsigned long pgoff)\n{\n  ...\n  addr = mmap_region(file, addr, len, flags, vm_flags, pgoff);\n  return addr;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-return-syscall-exit",
+          "title": "系统调用返回 — sysret",
+          "type": "code",
+          "description": "返回值（映射的虚拟地址）由entry_64.S中的系统调用分派放入%rax。RESTORE_ARGS重新加载保存的用户空间寄存器，sysretq原子性地恢复%rip、%rflags并切换回ring 3。C库封装函数在%rax中接收地址并将其返回给调用者。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "mmap-return-user-access",
+          "title": "首次用户访问触发页错误",
+          "type": "concept",
+          "description": "mmap()立即返回——尚未分配物理页（文件 backed 映射除外，文件系统可能预填充一些页）。对映射区域的首次读或写触发上述页错误路径，该路径惰性地分配并映射物理页。",
+          "data_structures": ["vm_area_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

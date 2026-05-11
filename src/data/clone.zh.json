@@ -1,0 +1,339 @@
+{
+  "id": "clone",
+  "name": "clone()",
+  "description": "通过精细控制父子进程之间共享哪些资源来创建新线程或进程。与 fork() 不同，clone() 接受一个 CLONE_* 标志位掩码，用于决定子进程是否共享父进程的地址空间、文件描述符、信号处理程序等。它是 pthreads 和容器运行时所使用的基础原语。",
+  "signature": "int clone(int (*fn)(void *), void *child_stack, int flags, void *arg, ...)",
+  "entry_point_file": "kernel/fork.c",
+  "main_flow": [
+    {
+      "id": "clone-user-space",
+      "title": "用户空间 — 带 CLONE_* 标志的 clone() 调用",
+      "description": "用户空间程序直接调用 clone() 或通过 pthreads 库（pthread_create）调用。调用者提供函数指针、子进程栈指针和 CLONE_* 标志位掩码。C 库包装器将系统调用号放入 %rax，将标志放入 %rdi，然后执行 syscall 指令进入内核。",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "clone-user-space-glibc",
+          "title": "glibc clone() 包装器",
+          "type": "concept",
+          "description": "glibc clone() 包装器用函数指针和参数设置子进程栈，然后使用 CLONE_* 标志调用系统调用。对于 pthread_create，包装器额外设置 CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-user-space-syscall-insn",
+          "title": "syscall 指令",
+          "type": "code",
+          "description": "syscall 指令原子性地保存 %rip 和 %rflags，切换到 ring 0，并从 TSS 加载内核栈指针。控制跳转到 entry_64.S 中的 system_call 入口点。x86-64 上 clone 的系统调用号为 56。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-user-space-flags",
+          "title": "CLONE_* 标志位字段",
+          "type": "data",
+          "description": "clone_flags 参数是一个控制资源共享的位掩码。关键标志：CLONE_VM（共享地址空间）、CLONE_FS（共享 chroot/cwd）、CLONE_FILES（共享文件描述符表）、CLONE_SIGHAND（共享信号处理程序）、CLONE_THREAD（同一线程组）、CLONE_NEWNS（新挂载命名空间）。普通 fork() 等价于不带共享标志的 clone(SIGCHLD)。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "include/linux/sched.h",
+            "line": 5,
+            "snippet": "#define CLONE_VM        0x00000100\n#define CLONE_FS        0x00000200\n#define CLONE_FILES     0x00000400\n#define CLONE_SIGHAND   0x00000800\n#define CLONE_THREAD    0x00010000"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-kernel-entry",
+      "title": "内核入口 — sys_clone → 带标志的 do_fork()",
+      "description": "内核的系统调用分派将 NR_clone 路由到 sys_clone()，后者定义在 kernel/fork.c（或架构相关的桩函数）中。sys_clone() 验证子进程栈指针，从用户空间复制标志，然后调用 do_fork() 并传入 CLONE_* 标志。do_fork() 是 fork()、vfork() 和 clone() 共享的入口点。",
+      "data_structures": ["task_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "clone-kernel-entry-sys-clone",
+          "title": "SYSCALL_DEFINE5(clone, ...)",
+          "type": "code",
+          "description": "x86-64 上的 sys_clone() 通过 kernel/fork.c 中的 SYSCALL_DEFINE5 定义。它从寄存器接收 clone_flags、child_stack 指针、parent_tidptr、child_tidptr 和 TLS 指针。它验证 child_stack 非 NULL（clone 需要，fork 不需要），然后调用 do_fork()。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process_64.c",
+            "line": 535,
+            "snippet": "SYSCALL_DEFINE5(clone, unsigned long, clone_flags, unsigned long, newsp,\n  int __user *, parent_tidptr, int __user *, child_tidptr,\n  int, tls_val)\n{\n  return do_fork(clone_flags, newsp, regs, 0, parent_tidptr, child_tidptr);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-kernel-entry-do-fork",
+          "title": "do_fork() — fork/clone 共享入口",
+          "type": "code",
+          "description": "do_fork() 是 Linux 中所有进程创建的架构无关入口点。它验证 clone_flags 的非法组合（例如不带 CLONE_SIGHAND 的 CLONE_THREAD），然后调用 copy_process() 创建新的 task_struct。copy_process() 完成后，它调用 wake_up_new_task() 来调度子进程。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1379,
+            "snippet": "long do_fork(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *parent_tidptr,\n  int __user *child_tidptr)\n{\n  struct task_struct *p;\n  p = copy_process(clone_flags, stack_start, regs,\n                   stack_size, child_tidptr, NULL);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-kernel-entry-flag-validation",
+          "title": "clone_flags 验证",
+          "type": "code",
+          "description": "do_fork() 在继续之前验证 clone_flags 位掩码。某些标志组合是非法的：CLONE_THREAD 需要 CLONE_SIGHAND；CLONE_SIGHAND 需要 CLONE_VM。如果检测到无效组合，do_fork() 立即返回 -EINVAL 而不分配任何资源。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1390,
+            "snippet": "if (clone_flags & CLONE_NEWNS && !(clone_flags & CLONE_FS))\n  return -EINVAL;\nif ((clone_flags & CLONE_THREAD) && !(clone_flags & CLONE_SIGHAND))\n  return -EINVAL;\nif ((clone_flags & CLONE_SIGHAND) && !(clone_flags & CLONE_VM))\n  return -EINVAL;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-copy-process",
+      "title": "copy_process — dup_task_struct → thread_struct 初始化",
+      "description": "copy_process() 是 clone 的核心：它调用 dup_task_struct() 分配新的 task_struct 和内核栈，然后根据 CLONE_* 标志有条件地复制或共享每个进程资源。对于线程（CLONE_THREAD），子进程共享父进程的 PID 命名空间和线程组 ID。",
+      "data_structures": ["task_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "clone-copy-process-entry",
+          "title": "copy_process() 编排",
+          "type": "code",
+          "description": "kernel/fork.c 中的 copy_process() 验证标志，调用 dup_task_struct() 创建子 task_struct，然后根据 clone_flags 有条件地复制每个子系统。对于 CLONE_THREAD，子进程获得与父进程相同的 tgid（同一线程组）。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 972,
+            "snippet": "static struct task_struct *copy_process(unsigned long clone_flags,\n  unsigned long stack_start,\n  struct pt_regs *regs,\n  unsigned long stack_size,\n  int __user *child_tidptr,\n  struct pid *pid)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-dup-task-struct",
+          "title": "dup_task_struct() — 新 task_struct + 内核栈",
+          "type": "code",
+          "description": "dup_task_struct() 使用 alloc_task_struct() 分配新的 task_struct，使用 alloc_thread_info() 分配 8KB 内核栈。它完整复制父进程的 task_struct，然后设置 thread_info 指针指向新栈。子进程的内核栈是全新分配的。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 207,
+            "snippet": "static struct task_struct *dup_task_struct(struct task_struct *orig)\n{\n  struct task_struct *tsk;\n  struct thread_info *ti;\n  tsk = alloc_task_struct();\n  if (!tsk)\n    return NULL;\n  ti = alloc_thread_info(tsk);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-thread-struct-init",
+          "title": "thread_struct 初始化",
+          "type": "data",
+          "description": "copy_process() 用用户提供的栈指针（clone 用）或父进程的栈（fork 用）初始化子进程的 thread_struct。指令指针设置为 ret_from_fork。对于带 CLONE_SETTLS 的 clone，线程局部存储描述符被复制到子进程的 thread_struct 中。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1280,
+            "snippet": "p->thread.sp = (unsigned long) childregs;\np->thread.ip = (unsigned long) ret_from_fork;\nif (clone_flags & CLONE_SETTLS)\n  p->thread.tls = tls;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-alloc-pid",
+          "title": "alloc_pid() — PID / TGID 分配",
+          "type": "code",
+          "description": "alloc_pid() 从全局 idr 树分配新的 PID。对于 CLONE_THREAD，子进程共享父进程的 tgid（线程组 ID）但获得自己唯一的 PID。对于不带 CLONE_THREAD 的普通 clone()，PID 和 TGID 都是新的，构成一个新进程。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid.c",
+            "line": 258,
+            "snippet": "struct pid *alloc_pid(struct pid_namespace *ns)\n{\n  struct pid *pid;\n  enum pid_type type;\n  int i, nr;\n  struct pid_namespace *tmp;\n  struct upid *upid;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-shared-mm",
+      "title": "共享 mm — 带 CLONE_VM 标志的 copy_mm",
+      "description": "copy_mm() 检查 CLONE_VM：如果设置（线程、容器），子进程共享父进程的 mm_struct 并增加其引用计数，而不是创建新的。没有 CLONE_VM 时，dup_mm() 分配新的 mm_struct 并设置写时复制页表，与 fork() 相同。",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "clone-copy-mm-clone-vm",
+          "title": "copy_mm() — CLONE_VM 路径",
+          "type": "code",
+          "description": "当设置 CLONE_VM 时，copy_mm() 简单地增加父进程 mm_struct 的引用计数并将其赋给子进程。父进程和子进程现在指向同一个 mm_struct，意味着它们共享整个虚拟地址空间，包括堆、栈映射和所有内存映射。",
+          "data_structures": ["mm_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 702,
+            "snippet": "static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct mm_struct *mm, *oldmm;\n  int retval;\n  tsk->min_flt = tsk->maj_flt = 0;\n  tsk->nvcsw = tsk->nivcsw = 0;\n  oldmm = current->mm;\n  if (!oldmm)\n    return 0;\n  if (clone_flags & CLONE_VM) {\n    atomic_inc(&oldmm->mm_users);\n    mm = oldmm;\n    goto good_mm;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-mm-shared-refcount",
+          "title": "mm_struct 引用计数",
+          "type": "data",
+          "description": "mm_struct 有两个引用计数器：mm_users 计数共享此 mm 的进程数（由 CLONE_VM 增加），mm_count 计数对 mm_struct 本身的引用数（包括来自核心转储器和换出代码的引用）。当 mm_users 降为零时，mm 被释放。",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "include/linux/mm_types.h",
+            "line": 200,
+            "snippet": "struct mm_struct {\n  struct vm_area_struct * mmap;\n  struct rb_root mm_rb;\n  pgd_t * pgd;\n  atomic_t mm_users;\n  atomic_t mm_count;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-mm-no-clone-vm",
+          "title": "dup_mm() — 不带 CLONE_VM",
+          "type": "code",
+          "description": "当未设置 CLONE_VM 时，copy_mm() 调用 dup_mm() 分配新的 mm_struct。它通过 dup_mmap() 复制所有 VMA 并遍历页表设置写时复制，与 fork() 相同。这是希望拥有自己地址空间的容器进程所走的路径。",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 730,
+            "snippet": "mm = dup_mm(tsk);\nif (!mm)\n  return -ENOMEM;\n\ngood_mm:\ntsk->mm = mm;\ntsk->active_mm = mm;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-shared-files-sighand",
+          "title": "带 CLONE 标志的 copy_files / copy_sighand",
+          "type": "code",
+          "description": "与 copy_mm 类似，copy_files() 检查 CLONE_FILES：如果设置，子进程共享父进程的 files_struct。copy_sighand() 检查 CLONE_SIGHAND：如果设置，子进程共享父进程的 sighand_struct。copy_fs() 检查 CLONE_FS 以共享 cwd/root/umask。每个在共享时都使用引用计数。",
+          "data_structures": ["files_struct", "task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 744,
+            "snippet": "static int copy_files(unsigned long clone_flags, struct task_struct *tsk)\n{\n  struct files_struct *oldf, *newf;\n  oldf = current->files;\n  if (!oldf)\n    goto out;\n  if (clone_flags & CLONE_FILES) {\n    atomic_inc(&oldf->count);\n    goto out;\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-wake",
+      "title": "唤醒 — wake_up_new_task → 运行队列入队",
+      "description": "copy_process() 完成后，do_fork() 调用 wake_up_new_task() 将子进程集成到调度器中。子进程被标记为 TASK_RUNNING 并加入 CPU 的 CFS 运行队列。对于线程（CLONE_THREAD），子进程共享父进程的信号组和线程组，因此发送到 tgid 的信号会传递给所有线程。",
+      "data_structures": ["task_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "clone-wake-up-new-task",
+          "title": "wake_up_new_task() — 加入运行队列",
+          "type": "code",
+          "description": "wake_up_new_task() 获取运行队列锁，调用 activate_task() 将子进程的 sched_entity 插入 CFS 红黑树，并将任务状态设置为 TASK_RUNNING。对于线程（CLONE_THREAD），子进程被添加到父进程的线程组列表中。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2418,
+            "snippet": "void wake_up_new_task(struct task_struct *p, unsigned long clone_flags)\n{\n  unsigned long flags;\n  struct rq *rq;\n  rq = task_rq_lock(p, &flags);\n  activate_task(rq, p, 0);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-thread-group-link",
+          "title": "线程组链接（CLONE_THREAD）",
+          "type": "data",
+          "description": "当设置 CLONE_THREAD 时，copy_process() 通过 list_add_tail_rcu(&p->thread_group, &p->group_leader->thread_group) 将子进程链接到父进程的线程组。组中的所有线程共享相同的 tgid 和 signal_struct。group_leader 字段指向创建该组的线程。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1250,
+            "snippet": "if (clone_flags & CLONE_THREAD) {\n  p->group_leader = current->group_leader;\n  list_add_tail_rcu(&p->thread_group,\n                    &p->group_leader->thread_group);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-sched-entity",
+          "title": "线程的 sched_entity",
+          "type": "data",
+          "description": "对于 CLONE_THREAD 任务，sched_entity 用从父进程继承的 vruntime 初始化，以维持线程组内的公平调度。从 CFS 调度器的角度来看，组中的所有线程作为一个单一调度实体竞争 CPU 时间。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/sched.c",
+            "line": 2389,
+            "snippet": "static void task_fork_fair(struct task_struct *p)\n{\n  struct cfs_rq *cfs_rq = task_cfs_rq(current);\n  struct sched_entity *se = &p->se, *curr = cfs_rq->curr;\n  int this_cpu = smp_processor_id();"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "clone-return",
+      "title": "返回 — 父进程获得 PID/TID；子进程从 fn(arg) 开始",
+      "description": "do_fork() 将子进程的 PID 返回给父进程。子进程从 ret_from_fork 开始执行，跳转到用户提供的函数指针，参数位于子进程栈上。对于线程（CLONE_THREAD），getpid() 对所有线程返回相同的 tgid，而 gettid() 返回每个线程唯一的 PID。",
+      "data_structures": ["task_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "clone-parent-return",
+          "title": "父进程返回子进程 PID/TID",
+          "type": "code",
+          "description": "do_fork() 通过 task_pid_vnr() 将子进程的 PID 返回给父进程。如果指定了 CLONE_PARENT_SETTID，子进程的 TID 被写入用户空间的 parent_tidptr 地址。父进程在 clone() 调用之后恢复执行。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 1475,
+            "snippet": "nr = task_pid_vnr(p);\nif (clone_flags & CLONE_PARENT_SETTID)\n  put_user(nr, parent_tidptr);\n/* ... */\nreturn nr;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-child-start",
+          "title": "子进程从用户 fn(arg) 开始",
+          "type": "code",
+          "description": "对于 clone()，子进程栈由 glibc 包装器预先填充函数指针和参数。当 ret_from_fork 返回到用户空间时，子进程执行提供的函数并传入参数。函数返回时，子进程自动调用 exit()（由 glibc 包装器处理）。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 396,
+            "snippet": "ENTRY(ret_from_fork)\n  DEFAULT_FRAME\n  push kernel_eflags(%rip)\n  CFI_ADJUST_CFA_OFFSET 8\n  popf\n  CFI_ADJUST_CFA_OFFSET -8\n  call schedule_tail"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "clone-child-cleartid",
+          "title": "CLONE_CHILD_CLEARTID — 退出时 futex 唤醒",
+          "type": "code",
+          "description": "当设置 CLONE_CHILD_CLEARTID 时，内核存储 child_tidptr 并在子进程退出时对该地址执行 futex(FUTEX_WAKE)。这就是 pthread_join() 知道线程何时终止的方式 — 它等待 futex 并在子进程清除其 TID 时被唤醒。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/process_64.c",
+            "line": 142,
+            "snippet": "if (clone_flags & CLONE_CHILD_CLEARTID)\n  p->clear_child_tid = child_tidptr;\nif (clone_flags & CLONE_CHILD_SETTID)\n  put_user(nr, child_tidptr);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

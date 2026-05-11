@@ -1,0 +1,416 @@
+{
+  "id": "write",
+  "name": "write()",
+  "description": "将数据从用户空间缓冲区传输到文件描述符。内核将数据复制到页缓存，标记页面为脏页，然后同步刷新或排队等待后台回写，通过块层和DMA写入磁盘。",
+  "signature": "ssize_t write(int fd, const void *buf, size_t count)",
+  "entry_point_file": "fs/read_write.c",
+  "main_flow": [
+    {
+      "id": "write-user-space",
+      "title": "用户空间",
+      "description": "用户空间程序通过C库封装函数（glibc）调用write(fd, buf, 4096)，将系统调用号（x86-64上NR_write = 1）放入%rax寄存器，三个参数分别放入%rdi、%rsi、%rdx，然后执行syscall指令陷入内核。",
+      "data_structures": ["task_struct", "file"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "write-user-space-glibc",
+          "title": "glibc write()封装函数",
+          "type": "concept",
+          "description": "GNU C库为原始系统调用提供了一个薄封装层。它按照ABI约定的调用约定进行设置：%rax = __NR_write (1)，%rdi = fd，%rsi = buf，%rdx = count。此阶段尚未涉及内核——纯粹是用户空间的准备工作。",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-user-space-syscall-insn",
+          "title": "syscall指令",
+          "type": "code",
+          "description": "syscall指令原子性地将%rip和%rflags保存到MSR_LSTAR定义的内核入口地址，切换到ring 0，并从TSS加载内核栈指针。控制权跳转到entry_64.S中的system_call入口点。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  movq %rsp, PER_CPU_VAR(old_rsp)\n  movq PER_CPU_VAR(kernel_stack),%rsp"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-user-space-file-table",
+          "title": "文件描述符查找",
+          "type": "data",
+          "description": "在系统调用触发之前，文件描述符整数仅仅是一个索引。内核将在内核入口阶段根据进程的文件描述符表（task_struct->files->fdt->fd[fd]）来解析它。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-kernel-entry",
+      "title": "内核入口",
+      "description": "CPU现在处于ring 0。通用系统调用分派表将NR_write路由到sys_write()，这是write()的内核实现。内核验证文件描述符，检查写权限，并从进程文件表中获取struct file指针。",
+      "data_structures": ["task_struct", "file"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "write-kernel-entry-system-call",
+          "title": "system_call入口点",
+          "type": "code",
+          "description": "entry_64.S保存所有通用寄存器，重新开启中断，然后调用sys_call_table[%rax]分派到正确的系统调用处理函数。对于NR_write (1)，这会调用sys_write()。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 455,
+            "snippet": "ENTRY(system_call)\n  SWAPGS_UNSAFE_STACK\n  SAVE_ARGS 8,0\n  movq %rax,ORIG_RAX-ARGOFFSET(%rsp)\n  call *sys_call_table(,%rax,8)"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-kernel-entry-sys-write",
+          "title": "SYSCALL_DEFINE3(write, ...)",
+          "type": "code",
+          "description": "sys_write()在fs/read_write.c中通过SYSCALL_DEFINE3宏定义。它调用fget_light()从当前进程的文件描述符表中查找struct file，验证fd已打开用于写入，然后调用vfs_write(file, buf, count, &pos)。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 408,
+            "snippet": "SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf, size_t, count)\n{\n  struct file *file;\n  ssize_t ret = -EBADF;\n  int fput_needed;\n\n  file = fget_light(fd, &fput_needed);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-kernel-entry-fget",
+          "title": "fget_light() — fd到struct file",
+          "type": "code",
+          "description": "fget_light()遍历task_struct->files->fdt->fd[fd]以返回struct file指针，当文件表未被共享时无需获取完整引用。它同时验证FMODE_WRITE标志是否已设置在文件上。",
+          "data_structures": ["task_struct", "file"],
+          "source_ref": {
+            "file": "fs/file_table.c",
+            "line": 326,
+            "snippet": "struct file *fget_light(unsigned int fd, int *fput_needed)\n{\n  struct file *file;\n  struct files_struct *files = current->files;\n  *fput_needed = 0;\n  if (likely((atomic_read(&files->count) == 1))) {\n    file = fcheck_files(files, fd);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-kernel-entry-pos",
+          "title": "文件位置跟踪",
+          "type": "data",
+          "description": "sys_write()获取file->f_pos（当前写入偏移量）并将其指针传递给vfs_write()。写入成功后，f_pos按写入的字节数递增，使顺序写入正常工作。",
+          "data_structures": ["file"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 417,
+            "snippet": "  if (file) {\n    loff_t pos = file_pos_read(file);\n    ret = vfs_write(file, buf, count, &pos);\n    file_pos_write(file, pos);\n    fput_light(file, fput_needed);\n  }"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-vfs",
+      "title": "VFS层",
+      "description": "虚拟文件系统（VFS）层为所有文件系统提供统一接口。vfs_write()执行权限检查，验证缓冲区可写，然后通过文件的f_op->write（或f_op->aio_write）函数指针进行分派，进入具体的文件系统实现。",
+      "data_structures": ["file", "inode"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "write-vfs-vfs-write",
+          "title": "vfs_write()",
+          "type": "code",
+          "description": "vfs_write()首先调用rw_verify_area()验证文件区域是否可访问且fd已打开用于写入，然后调用security_file_permission()进行强制访问控制。最后调用文件操作的write方法。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 306,
+            "snippet": "ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)\n{\n  ssize_t ret;\n  if (!(file->f_mode & FMODE_WRITE))\n    return -EBADF;\n  if (!file->f_op || (!file->f_op->write && !file->f_op->aio_write))\n    return -EINVAL;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-vfs-fop-dispatch",
+          "title": "file_operations分派",
+          "type": "code",
+          "description": "vfs_write()优先调用file->f_op->write()，否则回退到do_sync_write()，后者包装aio_write路径。每个文件系统注册自己的file_operations结构体，实现适合其磁盘布局的write方法。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 326,
+            "snippet": "  if (file->f_op->write)\n    ret = file->f_op->write(file, buf, count, pos);\n  else\n    ret = do_sync_write(file, buf, count, pos);\n  if (ret > 0) {\n    fsnotify_modify(file->f_dentry);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-vfs-file-operations-struct",
+          "title": "struct file_operations",
+          "type": "data",
+          "description": "struct file_operations是VFS的核心分派表。它包含read、write、llseek、mmap和open等函数指针。每个文件系统或设备驱动填写它支持的方法；VFS通过这些指针调用文件系统特定的代码。",
+          "data_structures": ["file", "inode"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 1516,
+            "snippet": "struct file_operations {\n  struct module *owner;\n  loff_t (*llseek) (struct file *, loff_t, int);\n  ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);\n  ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-vfs-inode",
+          "title": "inode与address_space",
+          "type": "data",
+          "description": "struct inode承载文件元数据（大小、权限、块映射）。其i_mapping字段指向管理该文件页缓存的struct address_space。文件系统的写入路径使用i_mapping来定位缓存页或分配新页用于写入。",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "include/linux/fs.h",
+            "line": 748,
+            "snippet": "struct inode {\n  umode_t\t\t\ti_mode;\n  uid_t\t\t\t\ti_uid;\n  gid_t\t\t\t\ti_gid;\n  const struct inode_operations\t*i_op;\n  struct super_block\t*i_sb;\n  struct address_space\t*i_mapping;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-page-cache",
+      "title": "页缓存",
+      "description": "文件系统的写入方法（如generic_file_write）将用户数据复制到页缓存。它使用copy_from_user()将字节带入内核页，通过set_page_dirty()标记为脏页，如果脏页阈值被超过或设置了O_SYNC，则可能触发回写。",
+      "data_structures": ["inode", "address_space"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "write-page-cache-generic-file-write",
+          "title": "generic_file_write() / generic_file_aio_write()",
+          "type": "code",
+          "description": "generic_file_aio_write()是缓冲I/O的默认写入方法。它遍历写入范围，在页缓存中查找或分配页面，锁定它们，并准备从用户空间复制数据。",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/filemap.c",
+            "line": 2408,
+            "snippet": "ssize_t\ngeneric_file_aio_write(struct kiocb *iocb, const struct iovec *iov,\n\t\t\t unsigned long nr_segs, loff_t pos)\n{\n  struct file *file = iocb->ki_filp;\n  struct address_space *mapping = file->f_mapping;\n  ssize_t written;\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-page-cache-copy-from-user",
+          "title": "copy_from_user() — 用户缓冲区 → 内核页",
+          "type": "code",
+          "description": "copy_from_user()安全地将字节从用户空间缓冲区复制到内核页。它使用access_ok()验证用户缓冲区是否有效，然后执行优化的内存复制。如果用户指针无效，它返回未复制的字节数而不会崩溃。",
+          "data_structures": ["task_struct", "address_space"],
+          "source_ref": {
+            "file": "arch/x86/lib/usercopy_64.c",
+            "line": 46,
+            "snippet": "unsigned long\ncopy_from_user(void *to, const void __user *from, unsigned long n)\n{\n  if (likely(access_ok(VERIFY_READ, from, n)))\n    n = __copy_from_user(to, from, n);\n  return n;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-page-cache-set-dirty",
+          "title": "set_page_dirty() — 标记页面已修改",
+          "type": "code",
+          "description": "将数据复制到页缓存后，内核通过set_page_dirty()将页面标记为脏页。这在struct page上设置PG_dirty标志，并在address_space中记录脏状态，以便页回写线程知道哪些页面需要刷新到磁盘。",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/page-writeback.c",
+            "line": 1311,
+            "snippet": "int set_page_dirty(struct page *page)\n{\n  struct address_space *mapping = page_mapping(page);\n  if (likely(mapping)) {\n    int (*spd)(struct page *) = mapping->a_ops->set_page_dirty;\n    ...\n    return spd(page);\n  }\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-page-cache-page-allocation",
+          "title": "页缓存分配（缓存未命中）",
+          "type": "code",
+          "description": "如果目标页面不在页缓存中，grab_cache_page_write_begin()分配一个新的页帧并将其插入address_space的radix树。页面在写入期间被锁定，以防止与其他写入者或readpage发生竞争。",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/filemap.c",
+            "line": 2142,
+            "snippet": "struct page *grab_cache_page_write_begin(struct address_space *mapping,\n  pgoff_t index, unsigned flags)\n{\n  int status;\n  struct page *page;\n  gfp_t gfp_notmask = 0;\n  page = find_lock_page(mapping, index);\n  if (page)\n    return page;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-block-layer",
+      "title": "块层",
+      "description": "脏页由页回写线程（pdflush或per-bdi writeback）刷新到磁盘，对于O_SYNC写入则同步刷新。文件系统的writepage方法构建BIO描述符并调用submit_bio()，将写请求通过块层推送到设备驱动。",
+      "data_structures": ["address_space"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "write-block-writeback-thread",
+          "title": "write_cache_pages() — 页回写",
+          "type": "code",
+          "description": "回写线程扫描address_space中的脏页并调用write_cache_pages()，该函数遍历radix树，找到脏页，锁定它们，并调用文件系统的writepage方法将每个页面转换为BIO请求。",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "mm/page-writeback.c",
+            "line": 1038,
+            "snippet": "int write_cache_pages(struct address_space *mapping,\n  struct writeback_control *wbc,\n  writepage_t writepage, void *data)\n{\n  int ret = 0;\n  int done = 0;\n  struct pagevec pvec;\n  int nr_pages;\n  pgoff_t index;\n  ..."
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-block-ext2-writepage",
+          "title": "ext2_writepage / mpage_writepage",
+          "type": "code",
+          "description": "对于ext2文件系统，address_space_operations->writepage指针设置为ext2_writepage，它委托给block_write_full_page。该函数通过ext2_get_block()将逻辑文件块映射到物理磁盘块，然后为块层构建BIO描述符。",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "fs/ext2/inode.c",
+            "line": 778,
+            "snippet": "static int ext2_writepage(struct page *page, struct writeback_control *wbc)\n{\n  return block_write_full_page(page, ext2_get_block, wbc);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-block-submit-bio",
+          "title": "submit_bio() — 块层入口（WRITE）",
+          "type": "code",
+          "description": "submit_bio()是内核块I/O的通用入口点。对于写入操作，它设置BIO_RW标志表示写操作，递增每个任务的写入计数，然后调用generic_make_request()将BIO通过I/O调度器路由到设备驱动。",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/blk-core.c",
+            "line": 1552,
+            "snippet": "void submit_bio(int rw, struct bio *bio)\n{\n  int count = bio_sectors(bio);\n  bio->bi_rw |= rw;\n  if (bio_has_data(bio)) {\n    if (rw & WRITE) {\n      task_io_account_write(count << 9);\n    }\n  }\n  generic_make_request(bio);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-block-io-scheduler",
+          "title": "I/O调度器队列（写入路径）",
+          "type": "concept",
+          "description": "I/O调度器合并和重排BIO请求以最小化磁盘磁头移动。写入请求可能与相邻写入合并（plugging）以形成更大的顺序传输。在Linux 2.6.32中，默认调度器是CFQ（完全公平队列）。",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/elevator.c",
+            "line": 474,
+            "snippet": "void elv_insert(struct request_queue *q, struct request *rq, int where)\n{\n  struct list_head *pos;\n  unsigned ordseq;\n  int unplug_it = 1;\n  trace_block_rq_insert(q, rq);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-hardware-io",
+      "title": "硬件I/O",
+      "description": "磁盘控制器从设备驱动接收WRITE DMA EXT命令。DMA引擎将数据直接从内核页缓存页传输到磁盘的内部缓冲区，然后驱动器将数据写入物理介质。完成中断信号表示传输结束。",
+      "data_structures": [],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "write-hw-ata-command",
+          "title": "磁盘控制器接收WRITE DMA EXT命令",
+          "type": "hardware",
+          "description": "AHCI或传统ATA驱动将命令FIS（帧信息结构）写入HBA的命令槽寄存器，指定LBA、扇区数和系统内存中的DMA缓冲区地址。SATA主机控制器通过SATA链路将该命令转发给磁盘。",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "AHCI主机总线适配器通过命令FIS接收WRITE DMA EXT命令。PRDT（物理区域描述符表）条目指向包含脏数据的内核页帧。驱动器固件接收命令并准备写入。",
+          "svg_asset": null
+        },
+        {
+          "id": "write-hw-dma-transfer",
+          "title": "DMA引擎将数据从RAM传输到磁盘",
+          "type": "hardware",
+          "description": "AHCI DMA引擎执行总线主控DMA传输，直接从页缓存中内核页的物理地址读取扇区数据并写入磁盘的内部缓冲区。CPU不参与数据字节的搬运。",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "AHCI HBA的DMA引擎使用PCI总线主控DMA直接从RAM读取512字节（或4 KiB原生扇区）块，完全绕过CPU数据通路。数据流向：系统内存 → PCIe总线 → 磁盘缓冲区。",
+          "svg_asset": null
+        },
+        {
+          "id": "write-hw-irq",
+          "title": "传输完成时的硬件中断",
+          "type": "hardware",
+          "description": "当所有扇区都已写入磁盘介质（或其易失性缓存）后，AHCI控制器在与I/O APIC相连的中断线上发出中断。CPU的本地APIC将中断路由到当前运行的CPU，内核的中断处理程序完成BIO。",
+          "data_structures": [],
+          "source_ref": null,
+          "hw_description": "AHCI HBA在驱动器报告命令完成后设置中断状态寄存器并发出IRQ（通常是IRQ 11或MSI向量）。I/O APIC向CPU传递固定向量中断，CPU进入内核中断处理程序。",
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "write-return-path",
+      "title": "返回路径",
+      "description": "对于缓冲写入，sys_write()在将数据复制到页缓存并标记页面为脏后立即返回——实际的磁盘I/O异步发生。对于O_SYNC或O_DIRECT写入，调用阻塞直到硬件确认完成。字节数通过系统调用返回路径返回给用户空间。",
+      "data_structures": ["task_struct", "file", "address_space"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "write-return-bio-endio",
+          "title": "bio->bi_end_io回调（异步完成）",
+          "type": "code",
+          "description": "对于异步写入，AHCI中断处理程序调用blk_complete_request()，进而调用BIO的bi_end_io回调。这解锁页面，清除PG_writeback标志，并唤醒任何等待同步完成的任务。页面作为干净数据保留在缓存中。",
+          "data_structures": ["address_space"],
+          "source_ref": {
+            "file": "block/blk-core.c",
+            "line": 1819,
+            "snippet": "void blk_finish_request(struct request *req, int error)\n{\n  if (blk_rq_tagged(req))\n    blk_queue_end_tag(req->q, req);\n  BUG_ON(blk_queued_rq(req));\n  if (unlikely(laptop_mode) && blk_fs_request(req))\n    laptop_io_completion();\n  if (req->end_io)\n    req->end_io(req, error);\n  else"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-return-sync-modes",
+          "title": "O_SYNC / fsync()同步回写",
+          "type": "concept",
+          "description": "当设置O_SYNC或调用fsync()时，写入路径阻塞直到脏页刷新且磁盘报告完成。generic_osync_inode()等待inode上的所有回写完成，确保在返回用户空间之前数据已持久化。",
+          "data_structures": ["inode", "address_space"],
+          "source_ref": {
+            "file": "fs/sync.c",
+            "line": 35,
+            "snippet": "int vfs_fsync_range(struct file *file, loff_t start, loff_t end,\n\t\t    int datasync)\n{\n  struct address_space *mapping = file->f_mapping;\n  int err, err2;\n  ...\n  err = filemap_fdatawrite_range(mapping, start, end);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-return-byte-count",
+          "title": "返回已写入字节数到用户空间",
+          "type": "code",
+          "description": "sys_write()返回成功复制到页缓存的字节数（对于同步I/O则是写入磁盘的字节数）。对于部分写入，返回实际计数。出错时，负的errno代码被放入%rax。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "fs/read_write.c",
+            "line": 422,
+            "snippet": "  if (file) {\n    loff_t pos = file_pos_read(file);\n    ret = vfs_write(file, buf, count, &pos);\n    file_pos_write(file, pos);\n    fput_light(file, fput_needed);\n  }\n  return ret;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "write-return-syscall-exit",
+          "title": "系统调用返回 — sysret",
+          "type": "code",
+          "description": "sys_write()将字节数（或负的errno）返回给entry_64.S中的系统调用分派代码。RESTORE_ARGS宏重新加载保存的用户空间寄存器，sysretq指令原子性地恢复%rip、%rflags并切换回ring 3。C库封装函数在%rax中接收返回值。",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "arch/x86/kernel/entry_64.S",
+            "line": 488,
+            "snippet": "sysret_check:\n  LOCKDEP_SYS_EXIT\n  DISABLE_INTERRUPTS(CLBR_NONE)\n  movl %_TIF_ALLWORK_MASK,%edi\n  andl %edi,%edx\n  jnz sysret_careful\n  RESTORE_ARGS 0,-ARG_SKIP,0\n  movq PER_CPU_VAR(old_rsp), %rsp\n  USERGS_SYSRET64"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}

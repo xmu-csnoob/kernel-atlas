@@ -1,0 +1,354 @@
+{
+  "id": "exit",
+  "name": "exit()",
+  "description": "Terminates the calling process and releases its resources. The kernel calls do_exit() to set the process state to TASK_DEAD, release the mm_struct and file descriptors, notify the parent via SIGCHLD, and transition the process to a zombie until the parent reaps it via wait4().",
+  "signature": "void exit(int status)",
+  "entry_point_file": "kernel/exit.c",
+  "main_flow": [
+    {
+      "id": "exit-user-space",
+      "title": "User Space — exit(status) call",
+      "description": "The user-space program invokes exit(status) (or _exit() / _Exit()), which calls the exit_group syscall to terminate the entire thread group. The C library wrapper places the status code in the exit argument, then issues the syscall instruction to trap into the kernel.",
+      "data_structures": ["task_struct"],
+      "position": 0,
+      "detail_nodes": [
+        {
+          "id": "exit-user-space-glibc",
+          "title": "glibc exit() wrapper",
+          "description": "The glibc exit() function performs atexit-registered cleanup handlers, flushes stdio buffers, closes streams, then calls the _exit() system call (NR_exit_group = 231 on x86-64) to enter the kernel. The status argument (0-255) is passed in the %rdi register.",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-user-space-syscall",
+          "title": "SYSCALL_DEFINE1(exit_group, int, error_code)",
+          "description": "The exit_group syscall terminates all threads in the process group. On x86-64, the syscall number 231 is placed in %rax, and the exit status is passed in %rdi. The syscall instruction traps into the kernel entry point.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 1025,
+            "snippet": "SYSCALL_DEFINE1(exit_group, int, error_code)\n{\n  do_group_exit((error_code & 0xff) << 8);\n}\nEXPORT_SYMBOL(exit_group);"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-user-space-do-group-exit",
+          "title": "do_group_exit() — signal all threads",
+          "description": "do_group_exit() sends SIGKILL to all other threads in the thread group via zap_other_threads(), then falls through to do_exit() for the current thread. This ensures the entire process group terminates together.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 987,
+            "snippet": "void do_group_exit(int exit_code)\n{\n  struct signal_struct *sig = current->signal;\n  BUG_ON(exit_code & 0x80);\n\n  if (signal_group_exit(sig))\n    exit_code = sig->group_exit_code;\n  else if (!thread_group_empty(current)) {\n    struct signal_struct *const sig = current->signal;\n    struct sighand_struct *const sighand = current->sighand;\n    spin_lock_irq(&sighand->siglock);\n    if (signal_group_exit(sig))\n      exit_code = sig->group_exit_code;\n    else {\n      sig->group_exit_code = exit_code;\n      zap_other_threads(current);\n    }\n    spin_unlock_irq(&sighand->siglock);\n  }\n  do_exit(exit_code);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-kernel-entry",
+      "title": "Kernel Entry — do_exit()",
+      "description": "do_exit() is the central kernel function for process termination. It sets the process state to PF_EXITING, disables preemption, and begins releasing all process resources in a carefully ordered sequence.",
+      "data_structures": ["task_struct"],
+      "position": 1,
+      "detail_nodes": [
+        {
+          "id": "exit-do-exit-entry",
+          "title": "do_exit() entry",
+          "description": "do_exit() in kernel/exit.c is the core process termination function. It first sets PF_EXITING on the task flags to prevent signal delivery, then calls exit_mm() to release the memory descriptor, followed by exit_files() to close file descriptors, and exit_fs() to release filesystem resources.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 927,
+            "snippet": "NORET_TYPE void do_exit(long code)\n{\n  struct task_struct *tsk = current;\n  int group_dead;\n\n  profile_task_exit(tsk);\n\n  WARN_ON(atomic_read(&tsk->fs_excl));\n\n  if (unlikely(in_interrupt()))\n    panic(\"Aiee, killing interrupt handler!\");\n  if (unlikely(!tsk->pid))\n    panic(\"Attempted to kill the idle task!\");\n\n  /*\n   * If do_exit is called because this processes oopsed, make sure\n   * other processes get a chance to run before we die.\n   */\n  if (unlikely(tsk->flags & PF_EXITING)) {\n    printk(KERN_ALERT \"Fixing recursive fault but reboot is needed!\\n\");\n    /*\n     * We can do this unlocked here. The futex code uses\n     * this flag just to verify whether the pi state\n     * cleanup has been done or not. In the worst case\n     * it loops once more.\n     */\n    tsk->flags |= PF_EXITPIDONE;\n    set_task_state(tsk, TASK_UNINTERRUPTIBLE);\n    schedule();\n    BUG();\n  }\n\n  exit_signals(tsk);\n  /*\n   * tsk->flags are checked in the futex code to protect against\n   * an unexpected task wakeup.\n   */\n  tsk->flags |= PF_EXITING;\n\n  /*\n   * tsk->io_context is protected by task_lock, and exit_io_context()\n   * is protected by task_lock too.\n   */\n  exit_io_context(tsk);\n\n  if (tsk->io_wait) {\n    /*\n     * We don't want the task to be frozen/hibernated while\n     * it is waiting for I/O.\n     */\n    tsk->io_wait = 0;\n  }\n\n  if (unlikely(in_atomic()))\n    printk(KERN_INFO \"note: %s/%d exited with preempt_count %d\\n\",\n      current->comm, task_pid_nr(current),\n      preempt_count());\n\n  profile_munmap(tsk->active_mm);\n  group_dead = atomic_dec_and_test(&tsk->signal->live);\n  if (group_dead) {\n    /*\n     * This accumulates the times of exited children and\n     * the time of this thread.\n     */\n    acct_process(code);\n    exit_sem(tsk);\n  }\n  __exit_fs(tsk);\n  exit_files(tsk);\n  exit_fs(tsk);\n  exit_namespace(tsk);\n  exit_thread();\n  cpuset_exit(tsk);\n  exit_keys(tsk);\n\n  if (group_dead && tsk->signal->leader)\n    disassociate_ctty(1);\n  module_put(tsk->real_cred->user_ns->owner);\n\n  /*\n   * FIXME: do that only when needed, using sched_exit tracepoints\n   */\n  profile_handoff_task(tsk);\n\n  /*\n   * Make sure we are holding no locks:\n   */\n  debug_check_no_locks_held(tsk);\n  /*\n   * We can do this unlocked here. The futex code uses\n   * this flag just to verify whether the pi state\n   * cleanup has been done or not.\n   */\n  tsk->flags |= PF_EXITPIDONE;\n\n  if (group_dead) {\n    hrtimer_cancel(&tsk->signal->real_timer);\n    exit_itimers(tsk->signal);\n    exit_posix_timers(tsk);\n  }\n\n  exit_mm(tsk);\n\n  /*\n   * The setting of the task state to TASK_DEAD must be\n   * the last thing the task does before it is reaped.\n   */\n  if (group_dead)\n    acct_update_integrals(tsk);\n  update_rusage(tsk, RUSAGE_CHILDREN);\n  tsk->exit_code = code;\n  /*\n   * We're in the middle of terminating, and setting the state\n   * to TASK_DEAD. The task must not try to acquire any locks,\n   * or do anything else that could block.\n   */\n  set_task_state(tsk, TASK_DEAD);\n  /*\n   * The final call to schedule() will switch to another task.\n   * The task will never run again.\n   */\n  schedule();\n  BUG();\n  /*\n   * schedule() should never return.\n   */\n  for (;;)\n    ;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-exit-signals",
+          "title": "exit_signals() — block all signal delivery",
+          "description": "exit_signals() sets the task's blocked signal mask to block all signals, clears pending signals, and prevents any new signal delivery to the dying process. This ensures a clean termination without interruption.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 841,
+            "snippet": "static void exit_signals(struct task_struct *tsk)\n{\n  int group_stop = 0;\n  struct signal_struct *sig = tsk->signal;\n\n  /*\n   * The thread group leader is the only one that can report\n   * the exit status to the parent.\n   */\n  if (thread_group_empty(tsk) || signal_group_exit(sig)) {\n    tsk->flags |= PF_EXITING;\n    if (thread_group_leader(tsk)) {\n      /*\n       * If this is the thread group leader, then we\n       * are the last thread in the group.\n       */\n      sig->group_exit_code = tsk->exit_code;\n      group_stop = tracehook_notify_death(tsk, &group_exit_code, NULL);\n    }\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-pf-exiting",
+          "title": "PF_EXITING flag",
+          "description": "The PF_EXITING flag in task_struct->flags marks the process as being in the process of exiting. Once set, the scheduler will not migrate this task, signal delivery is blocked, and futex operations are short-circuited.",
+          "type": "data",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-mm-release",
+      "title": "MM Release — exit_mm() → mmput() → release mm_struct",
+      "description": "exit_mm() releases the process's memory descriptor. It detaches the mm_struct from the task, decrements its reference count via mmput(), and if the count reaches zero, frees all page tables, VMAs, and the mm_struct itself.",
+      "data_structures": ["task_struct", "mm_struct"],
+      "position": 2,
+      "detail_nodes": [
+        {
+          "id": "exit-exit-mm",
+          "title": "exit_mm() — detach mm_struct from task",
+          "description": "exit_mm() in kernel/exit.c sets task->mm to NULL (the task no longer has an address space), then calls mmput() to decrement the mm_struct reference count. If this was the last reference, mmput() triggers full memory teardown.",
+          "type": "code",
+          "data_structures": ["task_struct", "mm_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 456,
+            "snippet": "void exit_mm(struct task_struct * tsk)\n{\n  struct mm_struct *mm = tsk->mm;\n\n  mm_release(tsk, mm);\n  if (!mm)\n    return;\n  /*\n   * Serialize with any possible pending coredump.\n   * We must hold mmap_sem around checking core_state\n   * and clearing tsk->mm.  The core_indirect_mutex\n   * protects against multiple parallel coredumps.\n   */\n  down_read(&mm->mmap_sem);\n  if (mm->core_state) {\n    up_read(&mm->mmap_sem);\n    /*\n     * If the process is coredumping, we can't release\n     * the mm yet.\n     */\n    return;\n  }\n  BUG_ON(mm != tsk->active_mm);\n  /* more_yank */\n  tsk->mm = NULL;\n  tsk->active_mm = NULL;\n  up_read(&mm->mmap_sem);\n  enter_lazy_tlb(mm, tsk);\n  mmput(mm);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-mmput",
+          "title": "mmput() — decrement mm reference count",
+          "description": "mmput() decrements the mm_struct's mm_users count. When the count reaches zero, it calls exit_mmap() to tear down all VMAs and page tables, then mmdrop() to free the mm_struct itself.",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "kernel/fork.c",
+            "line": 383,
+            "snippet": "void mmput(struct mm_struct *mm)\n{\n  might_sleep();\n\n  if (atomic_dec_and_test(&mm->mm_users)) {\n    uprobe_clear_state(mm);\n    exit_aio(mm);\n    ksm_exit(mm);\n    khugepaged_exit(mm); /* must run before exit_mmap */\n    exit_mmap(mm);\n    set_mm_exe_file(mm, NULL);\n    if (!list_empty(&mm->mmlist)) {\n      spin_lock(&mmlist_lock);\n      list_del(&mm->mmlist);\n      spin_unlock(&mmlist_lock);\n    }\n    put_swap_token(mm);\n    mmdrop(mm);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-exit-mmap",
+          "title": "exit_mmap() — free all VMAs and page tables",
+          "description": "exit_mmap() walks all vm_area_struct entries in the mm, unmaps each region (freeing page table entries and decrementing page reference counts), and frees the VMA structures. This is the bulk of memory cleanup.",
+          "type": "code",
+          "data_structures": ["mm_struct"],
+          "source_ref": {
+            "file": "mm/mmap.c",
+            "line": 2402,
+            "snippet": "void exit_mmap(struct mm_struct *mm)\n{\n  struct mmu_gather tlb;\n  struct vm_area_struct *vma;\n  unsigned long nr_accounted = 0;\n  unsigned long end;\n\n  lru_add_drain();\n  spin_lock(&mm->page_table_lock);\n  tlb_gather_mmu(&tlb, mm, 0, -1);\n  /* update_hiwater_rss(mm) here? */\n  end = unmap_vmas(&tlb, mm, mm->mmap, 0,\n      TASK_SIZE, &nr_accounted, NULL);\n  /*\n   * mm->mmap is set to NULL during the unmap_vmas call.\n   */\n  vma = mm->mmap;\n  mm->mmap = NULL;\n  mm->mm_rb = RB_ROOT;\n  mm->mmap_cache = NULL;\n  calc_vm_flags(mm);\n  spin_unlock(&mm->page_table_lock);\n  flush_tlb_mm(mm);\n\n  /*\n   * Walk the list again to free the actual vma structures.\n   */\n  while (vma) {\n    struct vm_area_struct *next = vma->vm_next;\n    remove_vma(vma);\n    vma = next;\n  }\n  lru_add_drain();\n  /*\n   * Walk the list again to free the actual vma structures.\n   */\n  tlb_finish_mmu(&tlb, 0, end);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-fd-cleanup",
+      "title": "FD Cleanup — exit_files() → put_files_struct()",
+      "description": "exit_files() closes all open file descriptors by decrementing the reference count on the files_struct. If the count reaches zero, put_files_struct() iterates the fdtable, calling filp_close() on each open file to release inodes, dentries, and filesystem resources.",
+      "data_structures": ["task_struct", "files_struct", "file"],
+      "position": 3,
+      "detail_nodes": [
+        {
+          "id": "exit-exit-files",
+          "title": "exit_files() — release file descriptor table",
+          "description": "exit_files() sets task->files to NULL and decrements the files_struct reference count. If this was the last reference, it triggers the full cleanup of all open file descriptors.",
+          "type": "code",
+          "data_structures": ["task_struct", "files_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 520,
+            "snippet": "void exit_files(struct task_struct *tsk)\n{\n  struct files_struct * files = tsk->files;\n\n  if (files) {\n    task_lock(tsk);\n    tsk->files = NULL;\n    task_unlock(tsk);\n    put_files_struct(files);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-put-files-struct",
+          "title": "put_files_struct() — close all open fds",
+          "description": "put_files_struct() decrements the files_struct reference count. When it reaches zero, it iterates through the fdtable, calling filp_close() for each open file descriptor, which releases the struct file, decrements inode and dentry reference counts, and calls the filesystem's release method.",
+          "type": "code",
+          "data_structures": ["files_struct", "file"],
+          "source_ref": {
+            "file": "fs/file.c",
+            "line": 376,
+            "snippet": "void put_files_struct(struct files_struct *files)\n{\n  struct fdtable *fdt;\n\n  if (atomic_dec_and_test(&files->count)) {\n    close_files(files);\n    /*\n     * Free the fdtables and the files structure itself.\n     */\n    fdt = files_fdtable(files);\n    if (fdt != &files->fdtab)\n      __free_fdtable(fdt);\n    kmem_cache_free(files_cachep, files);\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-close-files",
+          "title": "close_files() — filp_close loop",
+          "description": "close_files() iterates over all file descriptors in the fdtable. For each non-NULL entry, it calls filp_close(), which invokes the file's f_op->release method, decrements f_count, and if zero, frees the struct file and its associated dentry and inode.",
+          "type": "code",
+          "data_structures": ["files_struct", "file"],
+          "source_ref": {
+            "file": "fs/file.c",
+            "line": 359,
+            "snippet": "static void close_files(struct files_struct * files)\n{\n  int i, j;\n  struct fdtable *fdt;\n\n  j = 0;\n\n  /*\n   * It is safe to dereference the fd table without RCU or\n   * ->file_lock because this is the last reference to the\n   * files_struct and we are the only user.\n   */\n  fdt = files_fdtable(files);\n  for (;;) {\n    unsigned long set;\n    i = j * BITS_PER_LONG;\n    if (i >= fdt->max_fds)\n      break;\n    set = fdt->open_fds->fds_bits[j++];\n    while (set) {\n      if (set & 1) {\n        struct file * file = xchg(&fdt->fd[i], NULL);\n        if (file) {\n          filp_close(file, files);\n        }\n      }\n      i++;\n      set >>= 1;\n    }\n  }\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-signal-parent",
+      "title": "Signal Parent — do_notify_parent() → wake_up_parent()",
+      "description": "Before becoming a zombie, the exiting process notifies its parent by sending SIGCHLD. do_notify_parent() delivers the signal, sets the child's exit code in the parent's signal info, and wakes the parent if it is waiting in wait4().",
+      "data_structures": ["task_struct", "signal_struct"],
+      "position": 4,
+      "detail_nodes": [
+        {
+          "id": "exit-do-notify-parent",
+          "title": "do_notify_parent() — send SIGCHLD to parent",
+          "description": "do_notify_parent() sends SIGCHLD to the parent process with the child's exit status. If the parent has set SA_NOCLDSTOP or SA_NOCLDWAIT, the behavior is adjusted accordingly. The signal includes the child's PID and the exit code.",
+          "type": "code",
+          "data_structures": ["task_struct", "signal_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 727,
+            "snippet": "static void do_notify_parent(struct task_struct *tsk, int sig)\n{\n  struct siginfo info;\n  unsigned long flags;\n  struct sighand_struct *sighand;\n\n  BUG_ON(sig == -1);\n\n  /* do_notify_parent_cldstop should have been called instead.  */\n  BUG_ON(task_is_stopped_or_traced(tsk));\n\n  info.si_signo = sig;\n  info.si_errno = 0;\n  /*\n   * FIXME: under some circumstances, we should use CLD_KILLED\n   * instead of CLD_EXITED.\n   */\n  info.si_code = CLD_EXITED;\n  info.si_pid = task_pid_nr_ns(tsk, tsk->parent->nsproxy->pid_ns);\n  info.si_uid = task_uid(tsk);\n  info.si_status = tsk->exit_code >> 8;\n  info.si_utime = cputime_to_clock_t(tsk->utime);\n  info.si_stime = cputime_to_clock_t(tsk->stime);\n\n  sighand = tsk->parent->sighand;\n  spin_lock_irqsave(&sighand->siglock, flags);\n  if (sighand->action[SIGCHLD-1].sa.sa_handler == SIG_IGN ||\n      (sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDWAIT))\n    tsk->exit_signal = -1;\n  if (sigismember(&sighand->action[SIGCHLD-1].sa.sa_mask, sig))\n    sig = SIGCHLD;\n  __group_send_sig_info(sig, &info, tsk->parent);\n  spin_unlock_irqrestore(&sighand->siglock, flags);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-wake-up-parent",
+          "title": "wake_up_parent() — unblock wait4() caller",
+          "description": "After sending SIGCHLD, the kernel wakes the parent process if it is sleeping in a wait-family syscall (wait4, waitpid, waitid). The parent can then reap the child's exit status and free the remaining task_struct.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 800,
+            "snippet": "static void wake_up_parent(struct task_struct *parent, struct task_struct *child)\n{\n  wake_up_interruptible(&parent->signal->wait_chldexit);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-sigchld-info",
+          "title": "struct siginfo — exit status payload",
+          "description": "The siginfo structure carries the child's exit information to the parent: si_pid (child PID), si_status (exit code), si_utime/si_stime (CPU times), and si_code (CLD_EXITED for normal exit, CLD_KILLED for signal termination).",
+          "type": "data",
+          "data_structures": ["signal_struct"],
+          "source_ref": {
+            "file": "include/asm-generic/siginfo.h",
+            "line": 48,
+            "snippet": "typedef struct siginfo {\n  int si_signo;\n  int si_errno;\n  int si_code;\n\n  union {\n    int _pad[SI_PAD_SIZE];\n\n    /* kill() */\n    struct {\n      pid_t _pid;\t/* sender's pid */\n      __ARCH_SI_UID_T _uid;\t/* sender's uid */\n    } _kill;\n\n    /* POSIX.1b timers */\n    struct {\n      unsigned int _timer1;\n      unsigned int _timer2;\n    } _timer;\n\n    /* SIGCHLD */\n    struct {\n      pid_t _pid;\t/* which child */\n      __ARCH_SI_UID_T _uid;\n      int _status;\t/* exit code */\n      clock_t _utime;\n      clock_t _stime;\n    } _sigchld;\n    /* ... */\n  } _sifields;\n} siginfo_t;"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-zombie",
+      "title": "Zombie — release_task() → zap_pid_ns_processes()",
+      "description": "After do_exit() sets the task state to TASK_DEAD, the process becomes a zombie. It retains its task_struct and PID until the parent calls wait4(). If the parent exits first, init (PID 1) inherits the child and reaps it.",
+      "data_structures": ["task_struct"],
+      "position": 5,
+      "detail_nodes": [
+        {
+          "id": "exit-release-task",
+          "title": "release_task() — called from wait4() path",
+          "description": "release_task() is called when the parent reaps the child via wait4(). It detaches the zombie from the task list, releases the PID via free_pid(), decrements the parent's signal_struct live count, and finally frees the task_struct with free_task().",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 150,
+            "snippet": "void release_task(struct task_struct * p)\n{\n  struct task_struct *leader;\n  int zap_leader;\nrepeat:\n  /*\n   * Make sure we don't race with anything trying to\n   * wake this task up.\n   */\n  tracehook_prepare_release_task(p);\n  if (unlikely(tsk->flags & PF_EXITING))\n    return;\n\n  /*\n   * If we are the thread group leader, then we need to\n   * reap the other threads in the group.\n   */\n  write_lock_irq(&tasklist_lock);\n  if (unlikely(p->ptrace)) {\n    __ptrace_unlink(p);\n    if (p->exit_state != EXIT_ZOMBIE) {\n      /*\n       * If the task is not a zombie, then it is\n       * ptraced and we need to notify the tracer.\n       */\n      __ptrace_unlink(p);\n      goto repeat;\n    }\n  }\n\n  __exit_signal(p);\n\n  /*\n   * If we are the thread group leader, and the only\n   * thread in the group, then we can free the signal\n   * struct.\n   */\n  leader = p->group_leader;\n  if (leader != p && thread_group_empty(leader)\n      && leader->exit_state == EXIT_ZOMBIE) {\n    /*\n     * If the thread group leader is a zombie,\n     * then we can reap it now.\n     */\n    p = leader;\n    goto repeat;\n  }\n\n  /*\n   * If the parent has set SIG_IGN for SIGCHLD or\n   * SA_NOCLDWAIT, we can reap the child immediately.\n   */\n  zap_leader = (leader != p && thread_group_empty(leader));\n  write_unlock_irq(&tasklist_lock);\n  release_thread(p);\n  tracehook_report_death(p, &cookie, zap_leader);\n  /*\n   * We are the only user of the task_struct now,\n   * so we can free it.\n   */\n  put_task_struct(p);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-zap-pid-ns",
+          "title": "zap_pid_ns_processes() — PID namespace cleanup",
+          "description": "When a PID namespace is being destroyed, zap_pid_ns_processes() iterates all remaining processes in the namespace and forces them to exit. This ensures no dangling PIDs remain when a container or namespace is torn down.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid_namespace.c",
+            "line": 170,
+            "snippet": "void zap_pid_ns_processes(struct pid_namespace *pid_ns)\n{\n  int nr;\n  int rc;\n  struct task_struct *task, *me = current;\n\n  /*\n   * The last thread in the namespace is exiting.\n   * We need to kill all the other threads.\n   */\n  rc = me->signal->group_exit_code;\n  /*\n   * Don't allow any pid allocations beyond this point.\n   */\n  pid_ns->nr_hashed = PIDMAP_ENTRIES;\n\n  /*\n   * Send SIGKILL to all processes in the namespace.\n   */\n  read_lock(&tasklist_lock);\n  nr = next_pidmap(pid_ns, 1);\n  while (nr > 0) {\n    rcu_read_lock();\n    task = pid_task(find_vpid(nr), PIDTYPE_PID);\n    if (task)\n      send_sig_info(SIGKILL, SEND_SIG_FORCED, task);\n    rcu_read_unlock();\n    nr = next_pidmap(pid_ns, nr);\n  }\n  read_unlock(&tasklist_lock);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-free-pid",
+          "title": "free_pid() — return PID to the bitmap",
+          "description": "free_pid() returns the PID number to the pidmap bitmap so it can be reused by future processes. It also decrements the struct pid reference count and frees it when the last reference is dropped.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/pid.c",
+            "line": 296,
+            "snippet": "void free_pid(struct pid *pid)\n{\n  /* We can be called with write_lock_irq(&tasklist_lock) held */\n  int i;\n  unsigned long flags;\n\n  spin_lock_irqsave(&pidmap_lock, flags);\n  for (i = 0; i < pid->level; i++) {\n    struct upid *upid = pid->numbers + i;\n    pidmap_dealloc(upid->nr, upid->ns);\n  }\n  spin_unlock_irqrestore(&pidmap_lock, flags);\n\n  kmem_cache_free(pid_cachep, pid);\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    },
+    {
+      "id": "exit-reaped",
+      "title": "Reaped — wait4() → release_task() → task_struct freed",
+      "description": "The parent calls wait4() (or waitpid/wait) to collect the child's exit status. The kernel finds the zombie child, copies its exit code to user space, calls release_task() to free the task_struct and PID, and returns the child's PID to the parent.",
+      "data_structures": ["task_struct"],
+      "position": 6,
+      "detail_nodes": [
+        {
+          "id": "exit-wait4",
+          "title": "wait4() — parent reaps child",
+          "description": "wait4() iterates the parent's children list looking for a zombie (EXIT_ZOMBIE) child. When found, it copies the exit status to the user-provided status pointer, records resource usage (rusage), and calls release_task() to free the child's task_struct.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 1628,
+            "snippet": "SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,\n    int, options, struct rusage __user *, ru)\n{\n  struct wait_opts wo;\n  struct pid *pid = NULL;\n  enum pid_type type;\n  long ret;\n\n  if (options & ~(WNOHANG|WUNTRACED|WCONTINUED|\n      __WNOTHREAD|__WCLONE|__WALL))\n    return -EINVAL;\n\n  if (upid == -1)\n    type = PIDTYPE_MAX;\n  else if (upid < 0) {\n    type = PIDTYPE_PGID;\n    pid = find_get_pid(-upid);\n  } else if (upid == 0) {\n    type = PIDTYPE_PGID;\n    pid = find_get_pid(task_pgrp_nr(current));\n  } else /* upid > 0 */ {\n    type = PIDTYPE_PID;\n    pid = find_get_pid(upid);\n  }\n\n  wo.wo_type = type;\n  wo.wo_pid = pid;\n  wo.wo_options = options;\n  wo.wo_stat_addr = stat_addr;\n  wo.wo_rusage_addr = ru;\n  ret = do_wait(&wo);\n  put_pid(pid);\n\n  /* avoid REGPARM breakage on x86: */\n  return ret;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-do-wait",
+          "title": "do_wait() — find and reap zombie children",
+          "description": "do_wait() walks the children and sibling lists under tasklist_lock, looking for a child in EXIT_ZOMBIE state. When found, it collects the exit status and calls release_task(). If no zombie is found and WNOHANG is not set, it sleeps on the wait_chldexit wait queue until a child exits.",
+          "type": "code",
+          "data_structures": ["task_struct"],
+          "source_ref": {
+            "file": "kernel/exit.c",
+            "line": 1530,
+            "snippet": "static long do_wait(struct wait_opts *wo)\n{\n  struct task_struct *tsk;\n  int flag;\n  pid_t pid;\n  struct list_head *q;\n\n  trace_sched_process_wait(wo->wo_pid);\n\n  repeat:\n  flag = 0;\n  list_for_each_entry(tsk, &current->children, sibling) {\n    int ret;\n    pid = task_pid_nr_ns(tsk, current->nsproxy->pid_ns);\n    ret = eligible_child(wo, tsk);\n    if (!ret)\n      continue;\n    switch (ret) {\n    case ERR_PTR(-EAGAIN):\n      flag = 1;\n      continue;\n    case ERR_PTR(-ECHILD):\n      goto notask;\n    }\n    /*\n     * We have a matching child.\n     */\n    if (tsk->exit_state == EXIT_ZOMBIE) {\n      /*\n       * We don't reap group leaders with sub-threads.\n       */\n      if (!likely(wo->wo_options & WEXITED))\n        continue;\n      pid = wo->wo_stat_addr ?\n        tsk->exit_code : 0;\n      if (likely(!wo->wo_stat_addr ||\n          !put_user(pid, wo->wo_stat_addr))) {\n        if (wo->wo_rusage_addr)\n          getrusage(tsk, RUSAGE_BOTH,\n              wo->wo_rusage_addr);\n        if (!wo->wo_pid || type != PIDTYPE_PID ||\n            wo->wo_pid == pid) {\n          release_task(tsk);\n          return pid;\n        }\n      }\n    }\n    /* ... */\n  }\nnotask:\n  /*\n   * No matching child found.\n   */\n  if (flag) {\n    pid = 0;\n    if (wo->wo_options & WNOHANG)\n      return 0;\n    /*\n     * Wait for a child to exit.\n     */\n    retval = -ERESTARTSYS;\n    if (signal_pending(current))\n      goto end;\n    __set_current_state(TASK_INTERRUPTIBLE);\n    schedule();\n    goto repeat;\n  }\nend:\n  return pid;\n}"
+          },
+          "hw_description": null,
+          "svg_asset": null
+        },
+        {
+          "id": "exit-init-reaper",
+          "title": "init (PID 1) — the ultimate reaper",
+          "description": "If a parent exits before its children, the children are reparented to init (PID 1). init periodically calls wait4(-1, ...) to reap any orphaned children, preventing zombie processes from accumulating on the system.",
+          "type": "concept",
+          "data_structures": ["task_struct"],
+          "source_ref": null,
+          "hw_description": null,
+          "svg_asset": null
+        }
+      ]
+    }
+  ]
+}
