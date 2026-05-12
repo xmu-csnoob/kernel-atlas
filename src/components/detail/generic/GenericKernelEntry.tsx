@@ -44,7 +44,7 @@ const GenericKernelEntry: React.FC<DetailViewProps> = ({ node, region }) => {
             <StructCard
               name="pt_regs"
               type="saved context"
-              region="kernel"
+              region="vfs"
               fields={[
                 { label: 'rax', value: `__NR_${node.id}` },
                 { label: 'rdi', value: 'arg0' },

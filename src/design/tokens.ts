@@ -10,35 +10,178 @@
 // Used to color-code nodes, lanes, edges, and detail panels.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Region = 'user' | 'kernel' | 'hardware' | 'return';
+export type Region =
+  | 'user'
+  | 'vfs'
+  | 'mm'
+  | 'net'
+  | 'sched'
+  | 'process'
+  | 'signal'
+  | 'driver'
+  | 'block'
+  | 'fs'
+  | 'hardware'
+  | 'return';
 
 export const REGION_LABEL: Record<Region, string> = {
   user: 'User Space',
-  kernel: 'Kernel',
+  vfs: 'VFS',
+  mm: 'Memory',
+  net: 'Network',
+  sched: 'Scheduler',
+  process: 'Process',
+  signal: 'Signal',
+  driver: 'Driver',
+  block: 'Block I/O',
+  fs: 'File System',
   hardware: 'Hardware',
   return: 'Return',
+};
+
+export const REGION_LABEL_ZH: Record<Region, string> = {
+  user: '用户空间',
+  vfs: '虚拟文件系统',
+  mm: '内存管理',
+  net: '网络',
+  sched: '调度器',
+  process: '进程管理',
+  signal: '信号',
+  driver: '驱动',
+  block: '块设备',
+  fs: '文件系统',
+  hardware: '硬件',
+  return: '返回',
+};
+
+export const REGION_SUBLABEL: Record<Region, string> = {
+  user: 'ring 3',
+  vfs: 'VFS layer',
+  mm: 'page tables',
+  net: 'TCP/IP',
+  sched: 'CFS',
+  process: 'task_struct',
+  signal: 'sigaction',
+  driver: 'char/block',
+  block: 'bio/request',
+  fs: 'ext4/xfs',
+  hardware: 'devices',
+  return: 'back to user',
+};
+
+export const REGION_SUBLABEL_ZH: Record<Region, string> = {
+  user: '环 3',
+  vfs: 'VFS 层',
+  mm: '页表',
+  net: '网络栈',
+  sched: '调度',
+  process: '进程',
+  signal: '信号',
+  driver: '驱动',
+  block: '块层',
+  fs: '文件系统',
+  hardware: '设备',
+  return: '返回用户态',
 };
 
 /** Maps every main-flow node id (read + fork) to its execution region. */
 export const NODE_REGION: Record<string, Region> = {
   // read()
   'read-user-space': 'user',
-  'read-kernel-entry': 'kernel',
-  'read-vfs': 'kernel',
-  'read-storage-stack': 'kernel',
+  'read-kernel-entry': 'vfs',
+  'read-vfs': 'vfs',
+  'read-storage-stack': 'fs',
   'read-hardware-io': 'hardware',
   'read-return-path': 'return',
   // fork()
   'fork-user-space': 'user',
-  'fork-kernel-entry': 'kernel',
-  'fork-process-duplication': 'kernel',
-  'fork-memory-resources': 'kernel',
-  'fork-scheduler-integration': 'kernel',
+  'fork-kernel-entry': 'process',
+  'fork-process-duplication': 'process',
+  'fork-memory-resources': 'mm',
+  'fork-scheduler-integration': 'sched',
   'fork-return': 'return',
+  // write()
+  'write-user-space': 'user',
+  'write-kernel-entry': 'vfs',
+  'write-vfs': 'vfs',
+  'write-page-cache': 'mm',
+  'write-block-layer': 'block',
+  'write-hardware-io': 'hardware',
+  'write-return-path': 'return',
+  // open()
+  'open-user-space': 'user',
+  'open-kernel-entry': 'vfs',
+  'open-path-lookup': 'vfs',
+  'open-dentry-cache': 'vfs',
+  'open-inode-permission': 'vfs',
+  'open-fd-allocation': 'process',
+  'open-return-path': 'return',
+  // mmap()
+  'mmap-user-space': 'user',
+  'mmap-kernel-entry': 'mm',
+  'mmap-vma-allocation': 'mm',
+  'mmap-page-fault': 'mm',
+  'mmap-mapping': 'mm',
+  'mmap-tlb-update': 'mm',
+  'mmap-return': 'return',
+  // execve()
+  'execve-user-space': 'user',
+  'execve-kernel-entry': 'process',
+  'execve-elf-loader': 'process',
+  'execve-mm-replacement': 'mm',
+  'execve-arg-copy': 'process',
+  'execve-signal-reset': 'signal',
+  'execve-entry-jump': 'return',
+  // socket()
+  'socket-user-space': 'user',
+  'socket-kernel-entry': 'net',
+  'socket-af-inet': 'net',
+  'socket-bind-connect': 'net',
+  'socket-sk-buff': 'net',
+  'socket-protocol-stack': 'net',
+  'socket-return-path': 'return',
+  // ioctl()
+  'ioctl-user-space': 'user',
+  'ioctl-kernel-entry': 'vfs',
+  'ioctl-vfs': 'vfs',
+  'ioctl-device-handler': 'driver',
+  'ioctl-data-copy': 'vfs',
+  'ioctl-return-path': 'return',
+  // clone()
+  'clone-user-space': 'user',
+  'clone-kernel-entry': 'process',
+  'clone-copy-process': 'process',
+  'clone-shared-mm': 'mm',
+  'clone-wake': 'sched',
+  'clone-return': 'return',
+  // epoll_wait()
+  'epoll-wait-user-space': 'user',
+  'epoll-wait-kernel-entry': 'fs',
+  'epoll-wait-instance': 'fs',
+  'epoll-wait-ready-list': 'fs',
+  'epoll-wait-wait-queue': 'sched',
+  'epoll-wait-event-notify': 'fs',
+  'epoll-wait-return-path': 'return',
+  // exit()
+  'exit-user-space': 'user',
+  'exit-kernel-entry': 'process',
+  'exit-mm-release': 'mm',
+  'exit-fd-cleanup': 'process',
+  'exit-signal-parent': 'signal',
+  'exit-zombie': 'process',
+  'exit-reaped': 'return',
+  // brk()
+  'brk-user-space': 'user',
+  'brk-kernel-entry': 'mm',
+  'brk-heap-check': 'mm',
+  'brk-vma-update': 'mm',
+  'brk-page-alloc': 'mm',
+  'brk-tlb-update': 'mm',
+  'brk-return-path': 'return',
 };
 
 export function regionOf(nodeId: string): Region {
-  return NODE_REGION[nodeId] ?? 'kernel';
+  return NODE_REGION[nodeId] ?? 'process';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,11 +217,59 @@ export const color = {
       accent: '#ffd180',
       glow: 'rgba(255, 183, 77, 0.35)',
     },
-    kernel: {
-      bg: '#161532',
-      fg: '#9575cd',
-      accent: '#b39ddb',
-      glow: 'rgba(149, 117, 205, 0.35)',
+    vfs: {
+      bg: '#0d1f2d',
+      fg: '#4fc3f7',
+      accent: '#81d4fa',
+      glow: 'rgba(79, 195, 247, 0.35)',
+    },
+    mm: {
+      bg: '#1a1025',
+      fg: '#ce93d8',
+      accent: '#e1bee7',
+      glow: 'rgba(206, 147, 216, 0.35)',
+    },
+    net: {
+      bg: '#0d1b1a',
+      fg: '#69f0ae',
+      accent: '#b9f6ca',
+      glow: 'rgba(105, 240, 174, 0.35)',
+    },
+    sched: {
+      bg: '#1a1a0d',
+      fg: '#fff176',
+      accent: '#fff59d',
+      glow: 'rgba(255, 241, 118, 0.35)',
+    },
+    process: {
+      bg: '#1d1520',
+      fg: '#ff8a65',
+      accent: '#ffab91',
+      glow: 'rgba(255, 138, 101, 0.35)',
+    },
+    signal: {
+      bg: '#251010',
+      fg: '#ff5252',
+      accent: '#ff8a80',
+      glow: 'rgba(255, 82, 82, 0.35)',
+    },
+    driver: {
+      bg: '#151520',
+      fg: '#7986cb',
+      accent: '#9fa8da',
+      glow: 'rgba(121, 134, 203, 0.35)',
+    },
+    block: {
+      bg: '#1a1010',
+      fg: '#e57373',
+      accent: '#ffcdd2',
+      glow: 'rgba(229, 115, 115, 0.35)',
+    },
+    fs: {
+      bg: '#0f1d2a',
+      fg: '#4dd0e1',
+      accent: '#80deea',
+      glow: 'rgba(77, 208, 225, 0.35)',
     },
     hardware: {
       bg: '#2a1212',
@@ -183,7 +374,15 @@ export const shadow = {
     cyan: '0 0 14px rgba(77, 208, 225, 0.45)',
     pulse: '0 0 16px rgba(255, 235, 59, 0.7), 0 0 32px rgba(255, 235, 59, 0.4)',
     user: '0 0 14px rgba(255, 183, 77, 0.4)',
-    kernel: '0 0 14px rgba(149, 117, 205, 0.4)',
+    vfs: '0 0 14px rgba(79, 195, 247, 0.4)',
+    mm: '0 0 14px rgba(206, 147, 216, 0.4)',
+    net: '0 0 14px rgba(105, 240, 174, 0.4)',
+    sched: '0 0 14px rgba(255, 241, 118, 0.4)',
+    process: '0 0 14px rgba(255, 138, 101, 0.4)',
+    signal: '0 0 14px rgba(255, 82, 82, 0.4)',
+    driver: '0 0 14px rgba(121, 134, 203, 0.4)',
+    block: '0 0 14px rgba(229, 115, 115, 0.4)',
+    fs: '0 0 14px rgba(77, 208, 225, 0.4)',
     hardware: '0 0 14px rgba(239, 83, 80, 0.4)',
     return: '0 0 14px rgba(77, 208, 163, 0.4)',
   },

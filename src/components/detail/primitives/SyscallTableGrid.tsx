@@ -15,7 +15,7 @@ const SyscallTableGrid: React.FC<SyscallTableGridProps> = ({
   entries,
   activeIndex,
   columns = 8,
-  region = 'kernel',
+  region = 'vfs',
   label,
 }) => {
   const palette = regionPalette(region);

@@ -22,3 +22,12 @@ npm-debug.log*
 
 # Claude work artifacts (planning scratch)
 .claude/
+
+# PraxisKit planning files
+work/
+
+# Test output
+test-results/
+
+# Private subproject — not for public repo
+private/

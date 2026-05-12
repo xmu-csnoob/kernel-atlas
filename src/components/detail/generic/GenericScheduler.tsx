@@ -114,7 +114,7 @@ const GenericScheduler: React.FC<DetailViewProps> = ({ node, region }) => {
             <StructCard
               name="sched_entity"
               type="CFS unit"
-              region="kernel"
+              region="sched"
               fields={[
                 { label: 'load', value: 'NICE_0_LOAD' },
                 { label: 'vruntime', value: '0 ← start', highlight: true },
@@ -125,7 +125,7 @@ const GenericScheduler: React.FC<DetailViewProps> = ({ node, region }) => {
             <StructCard
               name="wake_up_new_task"
               type="enqueue"
-              region="kernel"
+              region="sched"
               fields={[
                 { label: 'p->state', value: 'TASK_RUNNING' },
                 { label: 'rq', value: '→ this_cpu' },

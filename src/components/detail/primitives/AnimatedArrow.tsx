@@ -13,7 +13,7 @@ const AnimatedArrow: React.FC<AnimatedArrowProps> = ({
   label,
   subLabel,
   width = 100,
-  color: arrowColor = color.region.kernel.fg,
+  color: arrowColor = color.text.secondary,
   animated = true,
 }) => {
   const markerId = `arr-${Math.random().toString(36).slice(2, 8)}`;

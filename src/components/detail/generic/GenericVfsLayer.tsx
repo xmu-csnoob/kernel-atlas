@@ -32,7 +32,7 @@ const GenericVfsLayer: React.FC<DetailViewProps> = ({ node, region }) => {
                 <StructCard
                   name="struct file"
                   type="open file"
-                  region="kernel"
+                  region="vfs"
                   fields={[
                     { label: 'f_path.dentry', value: '→ dentry' },
                     { label: 'f_op', value: '→ file_operations', highlight: true },
@@ -46,7 +46,7 @@ const GenericVfsLayer: React.FC<DetailViewProps> = ({ node, region }) => {
             <StructCard
               name="file_operations"
               type="VFS ops table"
-              region="kernel"
+              region="vfs"
               fields={[
                 { label: '.read', value: 'fs-specific', highlight: true },
                 { label: '.write', value: 'fs-specific' },
@@ -60,7 +60,7 @@ const GenericVfsLayer: React.FC<DetailViewProps> = ({ node, region }) => {
             <StructCard
               name="implementation"
               type="filesystem"
-              region="kernel"
+              region="vfs"
               fields={[
                 { label: 'func', value: 'ext2/3/4, xfs, ...' },
                 { label: 'inode', value: hasInode ? '→ struct inode' : '—' },
@@ -81,7 +81,7 @@ const GenericVfsLayer: React.FC<DetailViewProps> = ({ node, region }) => {
               lineHeight: 1.7,
             }}
           >
-            <span style={{ color: color.region.kernel.accent }}>VFS</span>{' '}
+            <span style={{ color: color.region.vfs.accent }}>VFS</span>{' '}
             provides a unified interface. The actual filesystem fills{' '}
             <span style={{ color: color.accent.primary }}>file_operations</span>{' '}
             with its own functions. The kernel calls these via function pointers,

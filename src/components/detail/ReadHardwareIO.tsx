@@ -33,11 +33,11 @@ const HardwareDiagram: React.FC = () => {
 
         {/* CPU at top */}
         <g transform="translate(540, 10)">
-          <rect width="160" height="50" rx="6" fill={color.region.kernel.bg} stroke={color.region.kernel.fg} strokeWidth="1.5" />
-          <text x="80" y="22" textAnchor="middle" fontFamily={font.family.mono} fontSize="11" fontWeight="700" fill={color.region.kernel.fg}>
+          <rect width="160" height="50" rx="6" fill={color.region.hardware.bg} stroke={color.region.hardware.fg} strokeWidth="1.5" />
+          <text x="80" y="22" textAnchor="middle" fontFamily={font.family.mono} fontSize="11" fontWeight="700" fill={color.region.hardware.fg}>
             CPU
           </text>
-          <text x="80" y="38" textAnchor="middle" fontFamily={font.family.mono} fontSize="9" fill={color.region.kernel.accent}>
+          <text x="80" y="38" textAnchor="middle" fontFamily={font.family.mono} fontSize="9" fill={color.region.hardware.accent}>
             running other tasks
           </text>
         </g>
@@ -92,11 +92,11 @@ const HardwareDiagram: React.FC = () => {
 
         {/* Memory (page cache) */}
         <g transform="translate(540, 130)">
-          <rect width="160" height="120" rx="6" fill={color.region.kernel.bg} stroke={color.region.kernel.fg} strokeWidth="1.5" />
-          <text x="80" y="22" textAnchor="middle" fontFamily={font.family.mono} fontSize="11" fontWeight="700" fill={color.region.kernel.fg}>
+          <rect width="160" height="120" rx="6" fill={color.region.hardware.bg} stroke={color.region.hardware.fg} strokeWidth="1.5" />
+          <text x="80" y="22" textAnchor="middle" fontFamily={font.family.mono} fontSize="11" fontWeight="700" fill={color.region.hardware.fg}>
             SYSTEM MEMORY
           </text>
-          <text x="80" y="38" textAnchor="middle" fontFamily={font.family.mono} fontSize="9" fill={color.region.kernel.accent} opacity="0.8">
+          <text x="80" y="38" textAnchor="middle" fontFamily={font.family.mono} fontSize="9" fill={color.region.hardware.accent} opacity="0.8">
             page cache
           </text>
           {/* Page cells filling in */}
@@ -112,8 +112,8 @@ const HardwareDiagram: React.FC = () => {
                   width="32"
                   height="22"
                   rx="2"
-                  fill={isTarget ? color.region.kernel.fg : color.bg.surface}
-                  stroke={isTarget ? color.pulse : color.region.kernel.fg + '33'}
+                  fill={isTarget ? color.region.hardware.fg : color.bg.surface}
+                  stroke={isTarget ? color.pulse : color.region.hardware.fg + '33'}
                   strokeWidth={isTarget ? '1.5' : '1'}
                   opacity={isTarget ? '0.9' : '0.4'}
                 >
@@ -135,7 +135,7 @@ const HardwareDiagram: React.FC = () => {
               </g>
             );
           })}
-          <text x="80" y="115" textAnchor="middle" fontFamily={font.family.mono} fontSize="8.5" fill={color.region.kernel.fg} opacity="0.8">
+          <text x="80" y="115" textAnchor="middle" fontFamily={font.family.mono} fontSize="8.5" fill={color.region.hardware.fg} opacity="0.8">
             page #17 ← arriving
           </text>
         </g>
@@ -167,39 +167,39 @@ const HardwareDiagram: React.FC = () => {
   );
 };
 
-const ReadHardwareIO: React.FC<DetailViewProps> = ({ node, region }) => {
-  return (
-    <DetailLayout
-      node={node}
-      region={region}
-      heroLabel="The hardware does the work — DMA + interrupt"
-      hero={
-        <div style={{ display: 'flex', flexDirection: 'column', gap: space[4] }}>
-          <HardwareDiagram />
-          <div
-            style={{
-              background: 'rgba(239, 83, 80, 0.06)',
-              border: `1px solid ${color.region.hardware.fg}33`,
-              borderRadius: radius.md,
-              padding: space[3],
-              fontFamily: font.family.sans,
-              fontSize: font.size.sm,
-              color: color.text.secondary,
-              lineHeight: 1.6,
-            }}
-          >
-            <strong style={{ color: color.region.hardware.fg }}>Why this matters:</strong>{' '}
-            The CPU does <em>not</em> shuffle bytes from disk to memory — it programs the disk
-            controller (via memory-mapped registers) and goes off to do other work. The DMA engine
-            shuttles the 4&nbsp;KB block directly into the page-cache page. When the transfer
-            finishes, the disk fires an interrupt; the kernel's IRQ handler wakes whoever is
-            sleeping on this BIO. <span style={{ color: color.region.hardware.fg }}>This is the only
-            point in the path where there is no kernel source line — it is silicon.</span>
-          </div>
-        </div>
-      }
-    />
-  );
-};
+export const ReadHardwareIOHero: React.FC = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: space[4] }}>
+    <HardwareDiagram />
+    <div
+      style={{
+        background: 'rgba(239, 83, 80, 0.06)',
+        border: `1px solid ${color.region.hardware.fg}33`,
+        borderRadius: radius.md,
+        padding: space[3],
+        fontFamily: font.family.sans,
+        fontSize: font.size.sm,
+        color: color.text.secondary,
+        lineHeight: 1.6,
+      }}
+    >
+      <strong style={{ color: color.region.hardware.fg }}>Why this matters:</strong>{' '}
+      The CPU does <em>not</em> shuffle bytes from disk to memory — it programs the disk
+      controller (via memory-mapped registers) and goes off to do other work. The DMA engine
+      shuttles the 4&nbsp;KB block directly into the page-cache page. When the transfer
+      finishes, the disk fires an interrupt; the kernel's IRQ handler wakes whoever is
+      sleeping on this BIO. <span style={{ color: color.region.hardware.fg }}>This is the only
+      point in the path where there is no kernel source line — it is silicon.</span>
+    </div>
+  </div>
+);
+
+const ReadHardwareIO: React.FC<DetailViewProps> = ({ node, region }) => (
+  <DetailLayout
+    node={node}
+    region={region}
+    heroLabel="The hardware does the work — DMA + interrupt"
+    hero={<ReadHardwareIOHero />}
+  />
+);
 
 export default ReadHardwareIO;

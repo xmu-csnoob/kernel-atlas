@@ -24,29 +24,23 @@ const CLONE_FLAGS: { flag: string; val: string; desc: string; active: boolean }[
   { flag: 'CLONE_CHILD_SETTID', val: '0x1000000', desc: 'set child tid', active: false },
 ];
 
-const ForkUserSpace: React.FC<DetailViewProps> = ({ node, region }) => {
-  return (
-    <DetailLayout
-      node={node}
-      region={region}
-      heroLabel="glibc fork() → clone(SIGCHLD)"
-      hero={
-        <div style={{ display: 'flex', flexDirection: 'column', gap: space[5] }}>
-          <div style={{ display: 'flex', gap: space[5], flexWrap: 'wrap', alignItems: 'flex-start' }}>
-            <StructCard
-              name="task_struct"
-              type="parent process"
-              region="user"
-              fields={[
-                { label: 'pid',     value: '1234' },
-                { label: 'tgid',    value: '1234' },
-                { label: 'mm',      value: '→ mm_struct' },
-                { label: 'files',   value: '→ files_struct' },
-              ]}
-            />
-            <div style={{ flex: 1, minWidth: '220px' }}>
-              <SectionLabel accent={color.region.user.fg}>the fork() call</SectionLabel>
-              <CodeBlock>{`/* glibc fork() is a thin wrapper */
+export const ForkUserSpaceHero: React.FC = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: space[5] }}>
+    <div style={{ display: 'flex', gap: space[5], flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <StructCard
+        name="task_struct"
+        type="parent process"
+        region="user"
+        fields={[
+          { label: 'pid',     value: '1234' },
+          { label: 'tgid',    value: '1234' },
+          { label: 'mm',      value: '→ mm_struct' },
+          { label: 'files',   value: '→ files_struct' },
+        ]}
+      />
+      <div style={{ flex: 1, minWidth: '220px' }}>
+        <SectionLabel accent={color.region.user.fg}>the fork() call</SectionLabel>
+        <CodeBlock>{`/* glibc fork() is a thin wrapper */
 __libc_fork() {
     pid_t pid = INLINE_SYSCALL(clone, 0,
         CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID
@@ -54,65 +48,66 @@ __libc_fork() {
         NULL, NULL, &pd->tid);
     return pid;
 }`}</CodeBlock>
-            </div>
-          </div>
+      </div>
+    </div>
 
-          <div>
-            <SectionLabel accent={color.region.user.fg}>clone() flags bitfield (SIGCHLD = 0x11)</SectionLabel>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                gap: '4px',
-                background: color.bg.inset,
-                border: `1px solid ${color.border.subtle}`,
-                borderRadius: radius.md,
-                padding: space[3],
-              }}
-            >
-              {CLONE_FLAGS.map((f) => (
-                <div
-                  key={f.flag}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: space[2],
-                    padding: `${space[1]} ${space[2]}`,
-                    borderRadius: radius.sm,
-                    background: f.active ? color.region.user.bg : 'transparent',
-                    border: f.active ? `1px solid ${color.region.user.fg}` : `1px solid transparent`,
-                    fontFamily: font.family.mono,
-                    fontSize: '9.5px',
-                    color: f.active ? color.region.user.fg : color.text.muted,
-                    fontWeight: f.active ? font.weight.semibold : font.weight.regular,
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  <span style={{ opacity: 0.7 }}>{f.val}</span>
-                  <span>{f.flag}</span>
-                  <span style={{ color: color.text.dim, marginLeft: 'auto' }}>{f.desc}</span>
-                </div>
-              ))}
-            </div>
-            <div
-              style={{
-                marginTop: space[2],
-                fontFamily: font.family.mono,
-                fontSize: font.size.xs,
-                color: color.text.muted,
-              }}
-            >
-              <span style={{ color: color.pulse, fontWeight: 700 }}>Highlight:</span>{' '}
-              fork() uses CLONE_CHILD_CLEARTID + CLONE_CHILD_SETTID + SIGCHLD
-            </div>
+    <div>
+      <SectionLabel accent={color.region.user.fg}>clone() flags bitfield (SIGCHLD = 0x11)</SectionLabel>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+          gap: '4px',
+          background: color.bg.inset,
+          border: `1px solid ${color.border.subtle}`,
+          borderRadius: radius.md,
+          padding: space[3],
+        }}
+      >
+        {CLONE_FLAGS.map((f) => (
+          <div
+            key={f.flag}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: space[2],
+              padding: `${space[1]} ${space[2]}`,
+              borderRadius: radius.sm,
+              background: f.active ? color.region.user.bg : 'transparent',
+              border: f.active ? `1px solid ${color.region.user.fg}` : `1px solid transparent`,
+              fontFamily: font.family.mono,
+              fontSize: '9.5px',
+              color: f.active ? color.region.user.fg : color.text.muted,
+              fontWeight: f.active ? font.weight.semibold : font.weight.regular,
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <span style={{ opacity: 0.7 }}>{f.val}</span>
+            <span>{f.flag}</span>
+            <span style={{ color: color.text.dim, marginLeft: 'auto' }}>{f.desc}</span>
           </div>
+        ))}
+      </div>
+      <div
+        style={{
+          marginTop: space[2],
+          fontFamily: font.family.mono,
+          fontSize: font.size.xs,
+          color: color.text.muted,
+        }}
+      >
+        <span style={{ color: color.pulse, fontWeight: 700 }}>Highlight:</span>{' '}
+        fork() uses CLONE_CHILD_CLEARTID + CLONE_CHILD_SETTID + SIGCHLD
+      </div>
+    </div>
 
-          {/* Boundary indicator */}
-          <RingBoundaryBanner />
-        </div>
-      }
-    />
-  );
-};
+    {/* Boundary indicator */}
+    <RingBoundaryBanner />
+  </div>
+);
+
+const ForkUserSpace: React.FC<DetailViewProps> = ({ node, region }) => (
+  <DetailLayout node={node} region={region} heroLabel="glibc fork() → clone(SIGCHLD)" hero={<ForkUserSpaceHero />} />
+);
 
 export default ForkUserSpace;

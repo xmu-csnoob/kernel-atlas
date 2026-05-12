@@ -1,8 +1,8 @@
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useCallback } from 'react';
 import type { SyscallData, MainFlowNode } from '../data/types';
-import { useExpand } from '../hooks/useExpand';
 import { usePlayback } from '../hooks/usePlayback';
-import DetailPanel from './DetailPanel';
+import { useLanguage } from '../i18n/useLanguage';
+import { zh } from '../i18n/zh';
 import PlaybackControls from './PlaybackControls';
 import {
   color,
@@ -14,20 +14,23 @@ import {
   regionOf,
   regionPalette,
   REGION_LABEL,
+  REGION_LABEL_ZH,
+  REGION_SUBLABEL,
+  REGION_SUBLABEL_ZH,
 } from '../design/tokens';
 import type { Region } from '../design/tokens';
 
 // ─── Geometry ────────────────────────────────────────────────────────────────
-const LANE_HEIGHT = 100;
+const LANE_HEIGHT = 104;
 const LANE_GAP = 8;
-const NODE_W = 152;
-const NODE_H = 80;
+const NODE_W = 160;
+const NODE_H = 88;
 const COL_GAP = 36;
 const PADDING_X = 32;
 const PADDING_Y = 16;
 const LANE_LABEL_W = 88;
 
-const LANE_ORDER: Region[] = ['user', 'kernel', 'hardware', 'return'];
+const LANE_ORDER: Region[] = ['user', 'vfs', 'fs', 'mm', 'net', 'sched', 'process', 'signal', 'driver', 'block', 'hardware', 'return'];
 
 function colX(position: number): number {
   return LANE_LABEL_W + PADDING_X + position * (NODE_W + COL_GAP) + NODE_W / 2;
@@ -47,7 +50,15 @@ interface NodeLayout {
 
 const REGION_ICON: Record<Region, string> = {
   user: '◔',
-  kernel: '◇',
+  vfs: '◇',
+  fs: '◆',
+  mm: '○',
+  net: '◎',
+  sched: '●',
+  process: '◐',
+  signal: '◑',
+  driver: '◒',
+  block: '◓',
   hardware: '▣',
   return: '↺',
 };
@@ -70,6 +81,11 @@ const STAGE_LABELS: Record<string, string[]> = {
     'runqueue + wake',
     'pid → parent',
   ],
+};
+
+const ZH_STAGE_LABELS: Record<string, string[]> = {
+  read: zh.stages.read as unknown as string[],
+  fork: zh.stages.fork as unknown as string[],
 };
 
 // ─── Bezier helpers ──────────────────────────────────────────────────────────
@@ -108,13 +124,20 @@ function buildEdge(a: NodeLayout, b: NodeLayout): EdgeGeometry {
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
-  const { expanded: userExpanded, toggle } = useExpand();
+interface MainFlowProps {
+  data: SyscallData;
+  selectedNodeId?: string | null;
+  onNodeClick?: (nodeId: string) => void;
+}
+
+const MainFlow: React.FC<MainFlowProps> = ({ data, selectedNodeId, onNodeClick }) => {
   const svgRef = useRef<SVGSVGElement>(null);
+  const { lang } = useLanguage();
+  const displayData = data;
 
   const sortedNodes = useMemo(
-    () => [...data.main_flow].sort((a, b) => a.position - b.position),
-    [data]
+    () => [...displayData.main_flow].sort((a, b) => a.position - b.position),
+    [displayData]
   );
 
   const activeLanes = useMemo(() => {
@@ -146,26 +169,27 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
     PADDING_Y * 2 + activeLanes.length * LANE_HEIGHT + (activeLanes.length - 1) * LANE_GAP;
 
   // SW/HW boundary (read only)
-  const showBoundary = data.id === 'read';
+  const showBoundary = displayData.id === 'read';
   const boundaryX = showBoundary
     ? (colX(3) + NODE_W / 2 + colX(4) - NODE_W / 2) / 2
     : null;
 
   // ─── Playback ─────────────────────────────────────────────────────────────
-  const [playback, playbackControls] = usePlayback(layouts.length);
+  const nodeIds = useMemo(() => layouts.map(l => l.node.id), [layouts]);
+  const handleStepNode = useCallback((nodeId: string) => {
+    onNodeClick?.(nodeId);
+  }, [onNodeClick]);
 
-  const stepLabels = STAGE_LABELS[data.id] ?? sortedNodes.map(n => n.title);
+  const [playback, playbackControls] = usePlayback(layouts.length, {
+    nodeIds,
+    onStepNode: handleStepNode,
+  });
 
-  // Active node id during playback (highlight + auto-expand)
+  const stepLabels = (lang === 'zh' ? ZH_STAGE_LABELS : STAGE_LABELS)[displayData.id] ?? sortedNodes.map(n => n.title);
+
+  // Active node id during playback (highlight)
   const activeNodeId =
     playback.status !== 'idle' ? layouts[playback.currentStep]?.node.id : undefined;
-
-  // Set of visible expansions = userExpanded ∪ {activeNodeId}
-  const displayedExpanded = useMemo(() => {
-    const set = new Set(userExpanded);
-    if (activeNodeId) set.add(activeNodeId);
-    return set;
-  }, [userExpanded, activeNodeId]);
 
   // Pulse position
   const pulsePos = useMemo<Point | null>(() => {
@@ -262,7 +286,10 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
       label.setAttribute('fill', palette.fg);
       label.setAttribute('letter-spacing', '0.16em');
       label.setAttribute('opacity', '0.85');
-      label.textContent = REGION_LABEL[region].toUpperCase();
+      label.textContent = (lang === 'zh'
+        ? REGION_LABEL_ZH[region]
+        : REGION_LABEL[region]
+      ).toUpperCase();
       svg.appendChild(label);
 
       const sub = document.createElementNS(ns, 'text');
@@ -273,11 +300,9 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
       sub.setAttribute('fill', palette.fg);
       sub.setAttribute('letter-spacing', '0.08em');
       sub.setAttribute('opacity', '0.45');
-      sub.textContent =
-        region === 'user' ? 'ring 3'
-        : region === 'kernel' ? 'ring 0'
-        : region === 'hardware' ? 'devices'
-        : 'back to user';
+      sub.textContent = lang === 'zh'
+        ? REGION_SUBLABEL_ZH[region]
+        : REGION_SUBLABEL[region];
       svg.appendChild(sub);
     });
 
@@ -323,7 +348,7 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
       lbl.setAttribute('fill', color.region.hardware.fg);
       lbl.setAttribute('letter-spacing', '0.18em');
       lbl.setAttribute('opacity', '0.85');
-      lbl.textContent = 'SW · HW';
+      lbl.textContent = lang === 'zh' ? zh.boundary.swHw : 'SW · HW';
       svg.appendChild(lbl);
     }
 
@@ -386,7 +411,7 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
     const pulseG = document.createElementNS(ns, 'g');
     pulseG.setAttribute('id', 'pulse-layer');
     svg.appendChild(pulseG);
-  }, [layouts, activeLanes, edges, svgW, svgH, boundaryX]);
+  }, [layouts, activeLanes, edges, svgW, svgH, boundaryX, lang]);
 
   // ─── Render dynamic pulse ────────────────────────────────────────────────
   useEffect(() => {
@@ -462,7 +487,7 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
         borderRadius: radius.xl,
         border: `1px solid ${color.border.subtle}`,
         padding: space[5],
-        overflowX: 'auto',
+        overflow: 'hidden',
       }}
     >
       <style>{`
@@ -494,7 +519,7 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
             letterSpacing: font.letterSpacing.tight,
           }}
         >
-          {data.name}
+          {displayData.name}
         </span>
         <span
           style={{
@@ -503,7 +528,7 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
             color: color.text.secondary,
           }}
         >
-          {data.signature}
+          {displayData.signature}
         </span>
       </div>
       <p
@@ -515,7 +540,7 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
           maxWidth: '720px',
         }}
       >
-        {data.description}
+        {displayData.description}
       </p>
 
       {/* Playback controls */}
@@ -528,50 +553,35 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
         />
       </div>
 
-      {/* Main flow canvas */}
-      <div
-        style={{
-          position: 'relative',
-          width: svgW,
-          height: svgH,
-          minWidth: svgW,
-        }}
-      >
-        <svg
-          ref={svgRef}
-          width={svgW}
-          height={svgH}
-          style={{ position: 'absolute', inset: 0, overflow: 'visible' }}
-        />
-        {layouts.map(layout => {
-          const isExpanded = displayedExpanded.has(layout.node.id);
-          const isActive = activeNodeId === layout.node.id;
-          return (
-            <NodeCard
-              key={layout.node.id}
-              layout={layout}
-              isExpanded={isExpanded}
-              isActive={isActive}
-              onToggle={() => toggle(layout.node.id)}
-            />
-          );
-        })}
-      </div>
-
-      {/* Expansion slots — DetailPanel for each open node */}
-      <div style={{ marginTop: space[6] }}>
-        {layouts.map(layout =>
-          displayedExpanded.has(layout.node.id) ? (
-            <div
-              key={layout.node.id}
-              className="expansion-slot"
-              data-node-id={layout.node.id}
-              style={{ marginBottom: space[4] }}
-            >
-              <DetailPanel node={layout.node} region={layout.region} />
-            </div>
-          ) : null
-        )}
+      {/* Main flow canvas — scrolls horizontally at native size */}
+      <div style={{ overflowX: 'auto', overflowY: 'hidden', paddingBottom: space[2] }}>
+        <div
+          style={{
+            position: 'relative',
+            width: svgW,
+            height: svgH,
+          }}
+        >
+          <svg
+            ref={svgRef}
+            width={svgW}
+            height={svgH}
+            style={{ position: 'absolute', inset: 0, overflow: 'visible' }}
+          />
+          {layouts.map(layout => {
+            const isSelected = selectedNodeId === layout.node.id;
+            const isActive = activeNodeId === layout.node.id;
+            return (
+              <NodeCard
+                key={layout.node.id}
+                layout={layout}
+                isSelected={isSelected}
+                isActive={isActive}
+                onClick={() => onNodeClick?.(layout.node.id)}
+              />
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -580,12 +590,12 @@ const MainFlow: React.FC<{ data: SyscallData }> = ({ data }) => {
 // ─── NodeCard ────────────────────────────────────────────────────────────────
 interface NodeCardProps {
   layout: NodeLayout;
-  isExpanded: boolean;
+  isSelected: boolean;
   isActive: boolean;
-  onToggle: () => void;
+  onClick: () => void;
 }
 
-const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onToggle }) => {
+const NodeCard: React.FC<NodeCardProps> = ({ layout, isSelected, isActive, onClick }) => {
   const { node, region, cx, cy } = layout;
   const palette = regionPalette(region);
   const [hover, setHover] = React.useState(false);
@@ -595,19 +605,19 @@ const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onTog
 
   const subtitle = node.description.split(/[.;]/)[0].trim().slice(0, 44);
 
-  const accentOpacity = isExpanded || isActive ? 1 : hover ? 0.85 : 0.45;
-  const cardBg = isActive ? color.bg.elevated : isExpanded ? color.bg.elevated : color.bg.surface;
-  const borderAlphaHex = isActive || isExpanded ? 'ff' : hover ? 'cc' : '4d';
+  const accentOpacity = isSelected || isActive ? 1 : hover ? 0.85 : 0.45;
+  const cardBg = isActive ? color.bg.elevated : isSelected ? color.bg.elevated : color.bg.surface;
+  const borderAlphaHex = isActive || isSelected ? 'ff' : hover ? 'cc' : '4d';
   const activeGlow = isActive
     ? `0 0 0 1.5px ${color.pulse}, 0 0 18px ${color.pulseGlow}`
     : null;
-  const expandedGlow = isExpanded ? `0 0 0 1px ${palette.fg}, ${shadow.glow[region]}` : null;
+  const selectedGlow = isSelected ? `0 0 0 1.5px ${palette.fg}, ${shadow.glow[region]}` : null;
   const hoverShadow = hover ? `0 4px 16px rgba(0,0,0,0.45)` : `0 1px 3px rgba(0,0,0,0.3)`;
-  const computedShadow = activeGlow ?? expandedGlow ?? hoverShadow;
+  const computedShadow = activeGlow ?? selectedGlow ?? hoverShadow;
 
   return (
     <button
-      onClick={onToggle}
+      onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -627,7 +637,7 @@ const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onTog
         textAlign: 'left',
         outline: 'none',
         boxShadow: computedShadow,
-        transform: hover && !isExpanded ? 'translateY(-2px)' : 'translateY(0)',
+        transform: hover && !isSelected ? 'translateY(-2px)' : 'translateY(0)',
         transition: `transform ${motion.duration.fast}ms ${motion.ease.out}, box-shadow ${motion.duration.fast}ms ${motion.ease.out}, border-color ${motion.duration.fast}ms ${motion.ease.out}, background ${motion.duration.fast}ms`,
       }}
     >
@@ -635,7 +645,7 @@ const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onTog
         <span
           style={{
             fontFamily: font.family.mono,
-            fontSize: '8.5px',
+            fontSize: font.size.xs,
             fontWeight: font.weight.bold,
             color: isActive ? color.pulse : palette.fg,
             letterSpacing: font.letterSpacing.label,
@@ -647,7 +657,7 @@ const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onTog
         </span>
         <span
           style={{
-            fontSize: '13px',
+            fontSize: font.size.base,
             color: palette.accent,
             opacity: accentOpacity,
             lineHeight: 1,
@@ -661,10 +671,10 @@ const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onTog
       <span
         style={{
           fontFamily: font.family.sans,
-          fontSize: font.size.base,
+          fontSize: font.size.md,
           fontWeight: font.weight.semibold,
           color: color.text.primary,
-          lineHeight: 1.2,
+          lineHeight: 1.25,
           letterSpacing: font.letterSpacing.tight,
         }}
       >
@@ -674,7 +684,7 @@ const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onTog
       <span
         style={{
           fontFamily: font.family.mono,
-          fontSize: '9.5px',
+          fontSize: font.size.sm,
           color: color.text.muted,
           lineHeight: 1.3,
           overflow: 'hidden',
@@ -683,22 +693,6 @@ const NodeCard: React.FC<NodeCardProps> = ({ layout, isExpanded, isActive, onTog
         }}
       >
         {subtitle}
-      </span>
-
-      <span
-        style={{
-          position: 'absolute',
-          right: 6,
-          bottom: 4,
-          fontSize: '9px',
-          color: isActive ? color.pulse : palette.fg,
-          opacity: 0.65,
-          fontFamily: font.family.mono,
-          letterSpacing: '-0.05em',
-        }}
-        aria-hidden
-      >
-        {isExpanded ? '▴ collapse' : '▾ expand'}
       </span>
     </button>
   );

@@ -24,38 +24,32 @@ const SYSCALL_TABLE_PREVIEW: string[] = [
   'sys_clone', 'sys_fork', 'sys_vfork', 'sys_execve',
 ];
 
-const ForkKernelEntry: React.FC<DetailViewProps> = ({ node, region }) => {
-  return (
-    <DetailLayout
-      node={node}
-      region={region}
-      heroLabel="syscall 57 → do_fork() dispatch"
-      hero={
-        <div style={{ display: 'flex', flexDirection: 'column', gap: space[5] }}>
-          {/* Syscall table grid */}
-          <SyscallTableGrid
-            entries={SYSCALL_TABLE_PREVIEW.map((name, i) => ({ index: i, name }))}
-            activeIndex={57}
-            columns={10}
-            label="sys_call_table[]  ·  %rax = 57 → sys_fork"
-          />
+export const ForkKernelEntryHero: React.FC = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: space[5] }}>
+    {/* Syscall table grid */}
+    <SyscallTableGrid
+      entries={SYSCALL_TABLE_PREVIEW.map((name, i) => ({ index: i, name }))}
+      activeIndex={57}
+      columns={10}
+      label="sys_call_table[]  ·  %rax = 57 → sys_fork"
+    />
 
-          {/* sys_fork → do_fork */}
-          <div style={{ display: 'flex', gap: space[5], flexWrap: 'wrap', alignItems: 'flex-start' }}>
-            <StructCard
-              name="do_fork()"
-              type="kernel/fork.c"
-              region="kernel"
-              fields={[
-                { label: 'clone_flags', value: 'SIGCHLD | ...', highlight: true },
-                { label: 'stack_start', value: '0 (child = same)' },
-                { label: 'regs', value: '→ pt_regs (parent ctx)' },
-                { label: 'parent_tidptr', value: '&tid' },
-                { label: 'child_tidptr', value: '&tid' },
-              ]}
-            />
-            <div style={{ flex: 1, minWidth: '240px' }}>
-              <CodeBlock compact>{`SYSCALL_DEFINE0(fork)
+    {/* sys_fork → do_fork */}
+    <div style={{ display: 'flex', gap: space[5], flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <StructCard
+        name="do_fork()"
+        type="kernel/fork.c"
+        region="process"
+        fields={[
+          { label: 'clone_flags', value: 'SIGCHLD | ...', highlight: true },
+          { label: 'stack_start', value: '0 (child = same)' },
+          { label: 'regs', value: '→ pt_regs (parent ctx)' },
+          { label: 'parent_tidptr', value: '&tid' },
+          { label: 'child_tidptr', value: '&tid' },
+        ]}
+      />
+      <div style={{ flex: 1, minWidth: '240px' }}>
+        <CodeBlock compact>{`SYSCALL_DEFINE0(fork)
 {
     return do_fork(SIGCHLD, 0, NULL, NULL, NULL);
 }
@@ -73,12 +67,13 @@ long do_fork(unsigned long clone_flags,
     wake_up_new_task(p);
     return p->pid;   // parent gets child PID
 }`}</CodeBlock>
-            </div>
-          </div>
-        </div>
-      }
-    />
-  );
-};
+      </div>
+    </div>
+  </div>
+);
+
+const ForkKernelEntry: React.FC<DetailViewProps> = ({ node, region }) => (
+  <DetailLayout node={node} region={region} heroLabel="syscall 57 → do_fork() dispatch" hero={<ForkKernelEntryHero />} />
+);
 
 export default ForkKernelEntry;

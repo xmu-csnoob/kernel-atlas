@@ -1,19 +1,10 @@
 import React from 'react';
 import { color, font, space, radius, motion } from '../design/tokens';
+import { useLanguage } from '../i18n/useLanguage';
 
-type View = 'syscall' | 'data-structures';
+const Nav: React.FC = () => {
+  const { lang, setLang } = useLanguage();
 
-interface NavProps {
-  activeView: View;
-  onViewChange: (view: View) => void;
-}
-
-const VIEWS: { id: View; label: string }[] = [
-  { id: 'syscall', label: 'Syscall Flow' },
-  { id: 'data-structures', label: 'Data Structures' },
-];
-
-const Nav: React.FC<NavProps> = ({ activeView, onViewChange }) => {
   return (
     <nav
       style={{
@@ -56,54 +47,34 @@ const Nav: React.FC<NavProps> = ({ activeView, onViewChange }) => {
         </span>
       </div>
 
-      {/* View tabs */}
-      <div
+      {/* Language toggle */}
+      <button
+        onClick={() => setLang(lang === 'en' ? 'zh' : 'en')}
+        aria-label="Switch language"
         style={{
-          display: 'flex',
-          gap: '2px',
-          background: color.bg.surface,
-          borderRadius: radius.lg,
+          padding: `${space[1]} ${space[3]}`,
+          borderRadius: radius.md,
           border: `1px solid ${color.border.subtle}`,
-          padding: '3px',
+          background: color.bg.surface,
+          color: color.text.secondary,
+          fontFamily: font.family.mono,
+          fontSize: font.size.xs,
+          fontWeight: font.weight.medium,
+          cursor: 'pointer',
+          transition: `background ${motion.duration.fast}ms ${motion.ease.out}, color ${motion.duration.fast}ms ${motion.ease.out}`,
+          letterSpacing: font.letterSpacing.wide,
+        }}
+        onMouseEnter={e => {
+          (e.currentTarget as HTMLButtonElement).style.background = color.bg.elevated;
+          (e.currentTarget as HTMLButtonElement).style.color = color.text.primary;
+        }}
+        onMouseLeave={e => {
+          (e.currentTarget as HTMLButtonElement).style.background = color.bg.surface;
+          (e.currentTarget as HTMLButtonElement).style.color = color.text.secondary;
         }}
       >
-        {VIEWS.map(v => {
-          const active = v.id === activeView;
-          return (
-            <button
-              key={v.id}
-              onClick={() => onViewChange(v.id)}
-              style={{
-                padding: `${space[1]} ${space[4]}`,
-                borderRadius: radius.md,
-                border: 'none',
-                background: active ? color.accent.primary : 'transparent',
-                color: active ? color.bg.canvas : color.text.secondary,
-                fontFamily: font.family.sans,
-                fontSize: font.size.sm,
-                fontWeight: active ? font.weight.semibold : font.weight.medium,
-                cursor: 'pointer',
-                transition: `background ${motion.duration.fast}ms ${motion.ease.out}, color ${motion.duration.fast}ms ${motion.ease.out}`,
-                letterSpacing: font.letterSpacing.normal,
-              }}
-              onMouseEnter={e => {
-                if (!active) {
-                  (e.currentTarget as HTMLButtonElement).style.background = color.bg.elevated;
-                  (e.currentTarget as HTMLButtonElement).style.color = color.text.primary;
-                }
-              }}
-              onMouseLeave={e => {
-                if (!active) {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-                  (e.currentTarget as HTMLButtonElement).style.color = color.text.secondary;
-                }
-              }}
-            >
-              {v.label}
-            </button>
-          );
-        })}
-      </div>
+        {lang === 'en' ? 'EN' : '中'}
+      </button>
     </nav>
   );
 };

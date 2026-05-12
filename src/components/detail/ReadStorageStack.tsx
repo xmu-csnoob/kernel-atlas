@@ -23,15 +23,9 @@ const PAGE_SLOTS: { state: 'filled' | 'empty' | 'miss' | 'incoming' }[] = (() =>
   return slots;
 })();
 
-const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
-  return (
-    <DetailLayout
-      node={node}
-      region={region}
-      heroLabel="page cache lookup → cache miss → BIO submission"
-      hero={
-        <div style={{ display: 'flex', flexDirection: 'column', gap: space[5] }}>
-          <style>{`
+export const ReadStorageStackHero: React.FC = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', gap: space[5] }}>
+    <style>{`
             @keyframes miss-pulse {
               0%, 100% { box-shadow: 0 0 0 0 rgba(239,83,80,0); transform: scale(1); }
               50%      { box-shadow: 0 0 0 4px rgba(239,83,80,0.4); transform: scale(1.06); }
@@ -50,7 +44,7 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
 
           {/* Page cache grid */}
           <div>
-            <SectionLabel accent={color.region.kernel.fg}>
+            <SectionLabel accent={color.region.fs.fg}>
               page cache (address_space radix tree)  ·  mm/filemap.c
             </SectionLabel>
             <div
@@ -89,7 +83,7 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
                           height: '28px',
                           borderRadius: '3px',
                           background: isFilled
-                            ? color.region.kernel.bg
+                            ? color.region.fs.bg
                             : isMiss
                             ? 'rgba(239, 83, 80, 0.18)'
                             : isIncoming
@@ -98,7 +92,7 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
                           border: isMiss
                             ? `1px solid ${color.region.hardware.fg}`
                             : isFilled
-                            ? `1px solid ${color.region.kernel.fg}55`
+                            ? `1px solid ${color.region.fs.fg}55`
                             : isIncoming
                             ? `1px dashed ${color.accent.success}`
                             : `1px solid ${color.border.subtle}`,
@@ -110,7 +104,7 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
                           color: isMiss
                             ? color.region.hardware.fg
                             : isFilled
-                            ? color.region.kernel.accent
+                            ? color.region.fs.accent
                             : isIncoming
                             ? color.accent.success
                             : color.text.dim,
@@ -142,7 +136,7 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
                   minWidth: '220px',
                 }}
               >
-                <LegendRow swatch={color.region.kernel.bg} swatchBorder={color.region.kernel.fg + '55'} dot="●" label="page in cache" />
+                <LegendRow swatch={color.region.fs.bg} swatchBorder={color.region.fs.fg + '55'} dot="●" label="page in cache" />
                 <LegendRow swatch="rgba(239, 83, 80, 0.18)" swatchBorder={color.region.hardware.fg} dot="?" label="miss — must fetch" pulse />
                 <LegendRow swatch="rgba(102, 187, 106, 0.18)" swatchBorder={color.accent.success} dot="↓" label="incoming via DMA" />
                 <LegendRow swatch={color.bg.surface} swatchBorder={color.border.subtle} dot="" label="not present" />
@@ -155,7 +149,7 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
 
           {/* BIO submission */}
           <div>
-            <SectionLabel accent={color.region.kernel.fg}>
+            <SectionLabel accent={color.region.fs.fg}>
               block I/O queue  ·  block/blk-core.c  ·  submit_bio
             </SectionLabel>
             <div
@@ -177,7 +171,7 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
                   right: 0,
                   top: '50%',
                   height: '2px',
-                  background: `linear-gradient(90deg, transparent 0%, ${color.region.kernel.fg}33 20%, ${color.region.kernel.fg}33 80%, transparent 100%)`,
+                  background: `linear-gradient(90deg, transparent 0%, ${color.region.fs.fg}33 20%, ${color.region.fs.fg}33 80%, transparent 100%)`,
                   transform: 'translateY(-50%)',
                 }}
               />
@@ -228,11 +222,17 @@ const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => {
               </div>
             </div>
           </div>
-        </div>
-      }
-    />
-  );
-};
+  </div>
+);
+
+const ReadStorageStack: React.FC<DetailViewProps> = ({ node, region }) => (
+  <DetailLayout
+    node={node}
+    region={region}
+    heroLabel="page cache lookup → cache miss → BIO submission"
+    hero={<ReadStorageStackHero />}
+  />
+);
 
 const LegendRow: React.FC<{
   swatch: string;
