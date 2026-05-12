@@ -20,11 +20,15 @@ npm-debug.log*
 # Cache
 .eslintcache
 
-# Claude work artifacts (planning scratch)
+# Claude work artifacts
 .claude/
 
-# PraxisKit planning files
+# PraxisKit planning and iteration files
 work/
+idea.md
+
+# Local deployment scripts (machine-specific)
+deploy/
 
 # Test output
 test-results/
