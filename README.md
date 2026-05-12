@@ -6,6 +6,8 @@ Trace what actually happens inside the kernel — stage by stage, data structure
 
 ![Hero screenshot](docs/hero.png)
 
+![Demo](docs/demo.gif)
+
 ---
 
 ## Why
